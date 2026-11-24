@@ -10,7 +10,8 @@ depends=(gtk3 libxt mime-types dbus-glib nss alsa-lib ttf-font ffmpeg)
 optdepends=("tor: one-click IP hiding in Settings"
             "whisper-cpp: the Obscurity voice assistant (speech recognition on this computer)"
             "bubblewrap: sandbox for the voice assistant's recognizer"
-            "libpulse: microphone access for the voice assistant")
+            "libpulse: microphone access for the voice assistant"
+            "python-numpy: audio processing in the voice assistant")
 makedepends=(clang lld llvm nasm cbindgen rust python nodejs wasi-libc wasi-compiler-rt wasi-libc++ wasi-libc++abi pkgconf diffutils)
 options=(!strip !lto)
 source=("https://archive.mozilla.org/pub/firefox/releases/$_esr/source/firefox-$_esr.source.tar.xz"
