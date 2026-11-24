@@ -1,0 +1,78 @@
+pkgname=obscurant
+pkgver=153.7.0
+_esr="${pkgver}esr"
+pkgrel=1
+pkgdesc="Private, low-memory web browser built on Firefox ESR, with a built-in blocker"
+arch=(x86_64)
+license=(MPL-2.0 'custom:third-party')
+url="https://github.com/mrbalt/obscurant"
+depends=(gtk3 libxt mime-types dbus-glib nss alsa-lib ttf-font ffmpeg)
+optdepends=("tor: one-click IP hiding in Settings"
+            "whisper-cpp: the Obscurity voice assistant (speech recognition on this computer)"
+            "bubblewrap: sandbox for the voice assistant's recognizer"
+            "libpulse: microphone access for the voice assistant")
+makedepends=(clang lld llvm nasm cbindgen rust python nodejs wasi-libc wasi-compiler-rt wasi-libc++ wasi-libc++abi pkgconf diffutils)
+options=(!strip !lto)
+source=("https://archive.mozilla.org/pub/firefox/releases/$_esr/source/firefox-$_esr.source.tar.xz"
+        mozconfig
+        obscurant-full.patch
+        obscurant-logo.png
+        obscurant-branding.tar.xz
+        obscurant-assets.tar.xz
+        policies.json
+        obscurant-pgo.profdata::https://github.com/mrbalt/obscurant/releases/download/pgo-1/obscurant-pgo.profdata)
+sha256sums=('7f8715ee7de2cf36a156216a9b1c7f26d1653010e65793bb2fce66e12edb6ea0'
+            'b63773d9674108603fda89c2aa7e779ace8d0eca8d47f42c5b1a34e66f2d2d84'
+            '9a4e0c32ec15289173f3e9fbadf975eaab89286f755cd67022cb7e216bd35fc0'
+            '5272846fb609a05a33d708dc094e3e5db3438d966be36d0595adec932389bb70'
+            '7c8af8e38ea01f9e4b6057f0efd39af685953c19403c8cd208f6558ff24d5bb0'
+            'db9b1c0705b0900b59a58b98cbbcae32055196f00a9c97157b027511594c27fc'
+            '16cccc0476d6a72ee526b01adc474d75c92d664750bddec85772a34d4c118f47'
+            '248156f3ed72e68a9f0402c2088c5e237356ad9ed5795b5ff35f28dac5cfe6c5')
+
+prepare() {
+  cd firefox-$pkgver
+  patch -Np1 -i ../obscurant-full.patch
+  cp ../mozconfig .
+  sed -i "s|@PGO@|$srcdir/obscurant-pgo.profdata|" mozconfig
+  cp ../obscurant-logo.png browser/components/aboutwelcome/content/obscurant-logo.png
+  cp -a ../obscurant-branding/obscurant browser/branding/
+  mkdir -p browser/base/content/fonts
+  cp ../obscurant-assets/fonts/* browser/base/content/fonts/
+}
+
+build() {
+  cd firefox-$pkgver
+  export MOZBUILD_STATE_PATH="$srcdir/mozbuild"
+  # Firefox sets its own compiler flags. makepkg's (-fexceptions, -march=native)
+  # break the build and would tie the result to this CPU.
+  unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS RUSTFLAGS
+  ./mach configure
+  ./mach build
+}
+
+package() {
+  cd firefox-$pkgver
+  export MOZBUILD_STATE_PATH="$srcdir/mozbuild"
+  ./mach package
+  install -d "$pkgdir/usr/lib/obscurant"
+  cp -a "$srcdir/obj-v1/dist/obscurant/." "$pkgdir/usr/lib/obscurant/"
+
+  local a="$srcdir/obscurant-assets"
+  install -Dm644 ../policies.json "$pkgdir/usr/lib/obscurant/distribution/policies.json"
+  install -Dm644 "$a/obscurant.js" "$pkgdir/usr/lib/obscurant/browser/defaults/preferences/obscurant.js"
+  install -Dm755 "$a/obscurant" "$pkgdir/usr/bin/obscurant"
+  install -Dm755 "$a/voice/obscurant-voice.py" "$pkgdir/usr/lib/obscurant/voice/obscurant-voice.py"
+  install -Dm644 "$a/obscurant.desktop" "$pkgdir/usr/share/applications/obscurant.desktop"
+  for f in "$a"/lists/*.txt; do
+    install -Dm644 "$f" "$pkgdir/usr/share/obscurant/lists/$(basename "$f")"
+  done
+  install -Dm644 "$a/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$a/THIRD-PARTY-NOTICES.md" "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY-NOTICES.md"
+  for f in "$a"/fonts/OFL*.txt; do
+    install -Dm644 "$f" "$pkgdir/usr/share/licenses/$pkgname/fonts/$(basename "$f")"
+  done
+  for s in 16 32 48 64 128 256 512; do
+    install -Dm644 "$a/icons/obscurant-$s.png" "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps/obscurant.png"
+  done
+}

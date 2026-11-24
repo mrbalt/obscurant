@@ -1,0 +1,42 @@
+[Adblock Plus 2.0]
+! AI generator sites (Obscurant). Optional: turned on with the shield's AI filters.
+! Chat assistants are NOT listed; this is image/video/music generators only.
+||midjourney.com^
+||mj-gallery.com^
+||leonardo.ai^
+||openart.ai^
+||civitai.com^
+||lexica.art^
+||nightcafe.studio^
+||dreamstudio.ai^
+||stability.ai^
+||runwayml.com^
+||pika.art^
+||lumalabs.ai^
+||hailuoai.com^
+||klingai.com^
+||kling.ai^
+||heygen.com^
+||synthesia.io^
+||ideogram.ai^
+||krea.ai^
+||tensor.art^
+||seaart.ai^
+||playground.com^
+||playgroundai.com^
+||sora.com^
+||suno.com^
+||udio.com^
+||artbreeder.com^
+||getimg.ai^
+||dall-efree.com^
+||perchance.org^
+||fotor.com^
+||hotpot.ai^
+||deepai.org^
+||craiyon.com^
+||mage.space^
+||pixai.art^
+||lensa-ai.com^
+||wombo.art^
+||starryai.com^

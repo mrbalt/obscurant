@@ -1,0 +1,20 @@
+#!/bin/sh
+
+# Hybrid laptops (integrated + NVIDIA): draw on the integrated GPU. Uses less
+# memory and keeps the NVIDIA GPU asleep. Set OBSCURANT_GPU=nvidia to opt out.
+if [ "${OBSCURANT_GPU:-integrated}" = "integrated" ] \
+   && [ -f /usr/share/glvnd/egl_vendor.d/50_mesa.json ]; then
+  V=$(cat /sys/class/drm/card*/device/vendor 2>/dev/null)
+  case "$V" in
+    *0x10de*) case "$V" in *0x1002*|*0x8086*)
+      export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json ;;
+    esac ;;
+  esac
+fi
+if [ "$1" = "--quit" ]; then
+  if pgrep -x obscurant >/dev/null 2>&1; then
+    exec /usr/lib/obscurant/obscurant --quit
+  fi
+  exit 0
+fi
+exec /usr/lib/obscurant/obscurant --class obscurant "$@"

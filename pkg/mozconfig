@@ -1,0 +1,53 @@
+# Baseline build: unpatched Firefox ESR 153.7.0, hardened/lean options only.
+ac_add_options --enable-application=browser
+ac_add_options --with-branding=browser/branding/obscurant
+
+# Out-of-tree object dir, keeps the source tree clean
+mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/../obj-v1
+
+# Optimized release build, no debug info (saves disk and link-time RAM)
+ac_add_options --enable-optimize
+ac_add_options --disable-debug
+ac_add_options --disable-debug-symbols
+ac_add_options --disable-tests
+
+# Toolchain
+ac_add_options --enable-linker=lld
+
+# No background phone-home components. Updates come from pacman.
+ac_add_options --disable-crashreporter
+ac_add_options --disable-updater
+
+# Remove features we do not use: less code, smaller attack surface
+ac_add_options --disable-webspeech
+ac_add_options --disable-synth-speechd
+ac_add_options --disable-parental-controls
+ac_add_options --disable-necko-wifi
+ac_add_options --disable-negotiateauth
+ac_add_options --disable-jxl
+ac_add_options --disable-backgroundtasks
+ac_add_options --disable-webdriver
+
+# 12 threads but only ~15 GB RAM: leave headroom for the final libxul link
+mk_add_options MOZ_PARALLEL_BUILD=8
+
+# Keep RLBox wasm sandboxing of bundled libraries (security feature)
+ac_add_options --with-wasi-sysroot=/usr/share/wasi-sysroot
+
+ac_add_options --with-app-basename=Obscurant
+
+# Add-ons must be signed by Mozilla; no sideloading from the profile folders
+mk_add_options MOZ_REQUIRE_SIGNING=1
+export MOZ_REQUIRE_SIGNING=1
+
+
+# Control-flow protection (indirect branch tracking + shadow stack markers) in C/C++.
+# Full RELRO, stack-protector-strong, stack-clash protection and FORTIFY are already
+# on by default in Firefox's build and were verified in the current binaries.
+export CFLAGS="-fcf-protection=full"
+export CXXFLAGS="-fcf-protection=full"
+
+# Optimized build: profile-guided (saved training profile) plus thin LTO
+ac_add_options --enable-profile-use
+ac_add_options --with-pgo-profile-path=@PGO@
+ac_add_options --enable-lto=thin

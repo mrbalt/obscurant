@@ -1,0 +1,10 @@
+src/
+work/
+*.pkg.tar.*
+*.profdata
+pkg/src/
+pkg/pkg/
+pkg/*.source.tar.xz
+__pycache__/
+*.pem
+latest.json
