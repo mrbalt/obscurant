@@ -3,7 +3,7 @@
 A private, low-memory, fast web browser built on Firefox ESR. Everything is built in: no extensions needed, no accounts, no sync,
 no AI features, nothing sent to Mozilla. Not made, endorsed or supported by Mozilla.
 
-Status: works on Linux (x86_64, packaged for Arch-based systems). Windows is experimental and not released yet.
+Status: works on Linux (x86_64, packaged for Arch-based systems). Windows is planned but not built yet; see `windows/README.md`.
 
 ## What is different from Firefox
 
