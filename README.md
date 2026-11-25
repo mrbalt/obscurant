@@ -20,14 +20,14 @@ What each build has today (yes / no, and "untested" where I have not seen it wor
 
 | Feature | Linux (Arch) | Linux (portable) | Windows | Android |
 | --- | --- | --- | --- | --- |
-| Built-in ad, tracker and phishing blocker (adblock-rust with EasyList, EasyPrivacy, uBlock, Brave and phishing lists) | yes | yes | yes, untested | lists bundled, untested |
-| Shield panel with per-site switches | yes | yes | yes, untested | basic version |
+| Built-in ad, tracker and phishing blocker (adblock-rust with EasyList, EasyPrivacy, uBlock, Brave and phishing lists) | yes | yes | yes, untested | ads and trackers checked in emulator |
+| Shield panel with per-site switches | yes | yes | yes, untested | yes |
 | Google container (sign-in isolated from the rest of your browsing) | yes | yes | yes, untested | yes |
 | VirusTotal download check with your own key (only the hash is sent) | yes | yes | yes, untested | yes, untested |
-| "Obscurity" voice assistant that runs only on your computer | yes | needs extra packages | yes, microphone untested | no |
-| SponsorBlock and YouTube ad removal | yes | yes | yes, untested | SponsorBlock add-on shortcut only |
-| Themes, new tab page, its own password page | yes | yes | yes, untested | themes and new tab page; no password page |
-| Hide my IP with Tor (one click) | needs `tor` installed | needs `tor` installed | yes, Tor included | no |
+| "Obscurity" voice assistant that runs only on your computer | yes | needs extra packages | yes, microphone untested | yes, tested with a recorded clip only |
+| SponsorBlock and YouTube ad removal | yes | yes | yes, untested | built in, untested |
+| Themes, new tab page, its own password page | yes | yes | yes, untested | themes and new tab page; passwords screen lock only |
+| Hide my IP with Tor (one click) | needs `tor` installed | needs `tor` installed | yes, Tor included | yes, Tor included |
 | Update notice (about once a day, tells you only) | yes | yes | not aware of Windows releases yet | yes, untested |
 | Profile-guided and link-time optimized build | yes | no | no | link-time only |
 | Memory-saving settings (idle tab unloading, small caches) | yes | yes | partly | partly |
@@ -128,38 +128,33 @@ Note: this package is built for very new systems (it needs glibc 2.44), so it on
 
 ## Obscurant for Android (early test build)
 
-An Android version built from Firefox for Android (Fenix) and its engine, with the same privacy goals. **This is an early test build (build 6) for 64-bit ARM phones, Android 8.0 or newer, which covers practically every Samsung phone in use.** **Build 6 was run in the Waydroid emulator before release** (setup screen, theme switching, restart, private mode, Settings, shield panel). Build 5 crashed when you picked a theme: update if you have it. Please report problems: https://github.com/mrbalt/obscurant/issues
+The desktop browser, rebuilt for a phone on the Firefox for Android engine. **This is an early test build (build 7) for 64-bit ARM phones, Android 8.0 or newer.** It was tested in the Waydroid emulator, not yet on a real phone by me. Please report problems: https://github.com/mrbalt/obscurant/issues
 
 **Install (Samsung and other phones):**
 
-1. On your phone, download `Obscurant-153.7.0-arm64-v8a.apk` from the [Android release](https://github.com/mrbalt/obscurant/releases/tag/android-153.7.0-6). If you installed an older build, this one installs over it.
+1. On your phone, download `Obscurant-153.7.0-arm64-v8a.apk` from the [Android release](https://github.com/mrbalt/obscurant/releases/tag/android-153.7.0-7). If you installed an older build, this one installs over it.
 2. Samsung blocks installs from outside the Play Store by default. In *Settings, Security and privacy, Auto Blocker*, turn Auto Blocker off while you install. Then allow *Install unknown apps* for the browser or Files app you downloaded it with.
 3. Tap the downloaded file and install. If Google Play Protect offers to send the app to Google for scanning, you can choose *Don't send*.
 4. Check the file before you install (recommended): its SHA-256 is in `SHA256SUMS-android`, and the signing certificate fingerprint should be `8585a142582dfadb1b6177d90f461de8672598b5296bcd7d51b6598fa7cf28d4`.
 
-How to tell it is Obscurant and not Firefox: on first start from the app icon you see the Obscurant intro and setup screen (theme, memory mode, default browser), then a new tab page with a clock and the Obscurant logo.
+What is in it:
 
-What it does today:
+- **Shield icon in the address bar** with a blocked count, and the desktop shield panel: per-site switch, blocked sites, ad-box hiding, phishing warnings, fingerprint and HTTPS-only switches, cookie rule, AI filters, voice, SponsorBlock.
+- **Ad and tracker blocking** with the desktop lists, ad-box hiding, YouTube ad removal, built-in SponsorBlock, AI filters, self-updating phishing list.
+- **New tab page** like desktop: changing wallpapers, clock, 14 name fonts, name and logo colors, editable shortcuts, movable blocks (drag, pinch, twist).
+- **Obscurity voice assistant:** "hey obscurity" or tap the round logo. Speech is recognised on the phone (whisper.cpp). A 141 MB model is downloaded once when you turn it on. It listens only while the browser is on screen. Dictation and clicking numbered links are not in the phone version.
+- **Hide my IP with Tor** (built in), **Obscurant tools** in the main menu (searchable commands, presets, memory and resource use, unload tabs), memory button, clean link copying, opening animation, automatic tab unloading when memory is low.
+- **Passwords lock:** an optional extra password in front of the passwords screen. It locks the screen only: it adds no encryption, and autofill still works.
+- Setup screen, 42 themes, Google container, VirusTotal download check with your own key, update notice.
+- No telemetry, accounts, sync or Mozilla services.
 
-- **setup screen** on first start: intro, 42 themes plus the default, Lean or Balanced memory, default browser.
-- its own **new tab page** and **42 color themes** from the desktop browser (Settings, "Obscurant themes").
-- **shields** in the shield icon panel: ads and trackers, phishing, fingerprinting and "do not sell my data" (all sites), plus "Shields for this site".
-- **Google container**: Google and YouTube pages opened from a normal tab get a separate cookie jar (switch in Settings; not used in private tabs). "Sign in with Google" on another website may fail with it on.
-- Mozilla's terms and privacy popups are off.
-- Its own name, icon, colors and dark theme, and its own app id (`org.obscurant.browser`), so it installs next to Firefox without touching it.
-- **No telemetry:** the part of the app that uploads usage data is switched off in the code, not just by a setting. Mozilla's settings server, experiments, sponsored tiles, Pocket, Firefox Suggest and the Mozilla VPN are off. No sign-in, account or sync screens, and no AI features.
-- DuckDuckGo is the default search engine, with Brave Search added.
-- The built-in ad, tracker and phishing blocker lists are bundled in the app (not yet verified on a real page).
-- **Speed-optimized engine** (link-time optimization), an **update notice** that only tells you when a newer build exists (switch off in Settings), and a **SponsorBlock** shortcut in Settings.
-- **VirusTotal download check:** at the bottom of Settings, add your free key (the steps are shown there; also see [docs/VIRUSTOTAL.md](docs/VIRUSTOTAL.md)). Only a download's hash is sent.
-- In a clean first-launch test of build 2 (a fresh install left alone for 150 seconds in Waydroid), the app contacted no Mozilla server.
+Checked in the emulator: ad scripts blocked and ad boxes hidden, shields off and on per site, Tor (confirmed by check.torproject.org, and off again), an AI generator site blocked, new tab changes kept after restart, phone back button on the new screens, passwords lock, memory screen, fresh setup, and voice end to end with a recorded clip played into the emulator's microphone.
 
-What it does **not** do yet (honest list):
+**Known:** right after a brand new install, the first page or two can load before the block lists are ready.
 
-- No voice assistant, Tor button or redesigned passwords page.
-- No built-in SponsorBlock, YouTube ad removal or AI-content filters, and the block lists only change with a new app build.
-- Profile-guided optimization (only the desktop Arch build has it).
-- No automatic updates: you install new versions by hand.
+**Not yet verified:** SponsorBlock, YouTube ad removal, the phishing list update, voice with a person speaking into a real phone microphone and its speed on a real phone (very slow in the emulator), VirusTotal with a real key, the update notice, low-memory unloading, the cookie rule's effect, and the moment while Tor reconnects after a restart.
+
+Not in the phone version: profile-guided speed optimization, desktop-only window and mouse features, and the desktop passwords page design. You update by installing new versions by hand.
 
 ## Build from source
 
@@ -175,7 +170,7 @@ This downloads the Firefox ESR source from Mozilla, applies `obscurant-full.patc
 
 **Windows:** a cross-build from Linux; see [`windows/README.md`](windows/README.md) and `windows/mozconfig`. The Windows source changes are in `patches/obscurant-full-with-windows.patch`.
 
-**Android:** a build of Firefox for Android with `android/mozconfig.template`; the source changes are in `patches/obscurant-android.patch` the images come from `tools/make_android_assets.py` and the themes from `tools/make_android_themes.py`. `tools/make_android_apk.py` removes your build folder paths, aligns and signs the APK with your own key.
+**Android:** a build of Firefox for Android with `android/mozconfig.template`; the source changes are in `patches/obscurant-android.patch` the images come from `tools/make_android_assets.py` and the themes from `tools/make_android_themes.py`. `tools/make_android_apk.py` removes your build folder paths, aligns and signs the APK with your own key. Before building the app, create the fonts with `tools/make_android_fonts.py` and the speech engine with `android-voice/build.sh` (whisper.cpp 1.9.5). Also copy the desktop `ai-sites.txt` list into `toolkit/content/lists`. Tor comes from the Guardian Project's `tor-android` library.
 
 ## Security updates
 

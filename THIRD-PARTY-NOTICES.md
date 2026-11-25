@@ -60,3 +60,9 @@ No warranty. There is no automatic update service. Security fixes arrive only wh
 
 ## Windows Tor pack
 - **Tor** 0.4.9.x (BSD-3-Clause), **libevent** (BSD-3-Clause), **OpenSSL** (Apache-2.0) and **zlib** (zlib license): the `tor` folder holds the `tor.exe` from the Tor Project's official Tor Expert Bundle, unmodified, with its license texts in `tor/licenses`. It is used only by the "Hide my IP with Tor" button.
+
+## Added in the Android app
+
+- **whisper.cpp** 1.9.5 (MIT), speech recognition engine. The speech model `ggml-base.en.bin` (MIT, OpenAI Whisper weights) is downloaded by the user, not shipped.
+- **tor-android** 0.4.9.17 by the Guardian Project (BSD-3-Clause), including Tor.
+- **New tab fonts**, the same SIL Open Font License fonts as the desktop version (license texts in the `fonts` folder of the desktop assets; each font also carries its license information).

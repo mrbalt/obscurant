@@ -1,3 +1,34 @@
+--- a/mobile/android/android-components/components/browser/engine-gecko/src/main/java/mozilla/components/browser/engine/gecko/GeckoTrackingProtectionExceptionStorage.kt
++++ b/mobile/android/android-components/components/browser/engine-gecko/src/main/java/mozilla/components/browser/engine/gecko/GeckoTrackingProtectionExceptionStorage.kt
+@@ -26,15 +26,9 @@
+ ) : TrackingProtectionExceptionStorage {
+ 
+     override fun contains(session: EngineSession, onResult: (Boolean) -> Unit) {
+-        val url = (session as GeckoEngineSession).currentUrl
+-        if (!url.isNullOrEmpty()) {
+-            getPermissions(url) { permissions ->
+-                val contains = permissions.isNotEmpty()
+-                onResult(contains)
+-            }
+-        } else {
+-            onResult(false)
+-        }
++        // The session already knows its page's exception. Matching stored ones by address misses
++        // http pages, whose exception is kept under the https address.
++        onResult((session as GeckoEngineSession).isIgnoredForTrackingProtection())
+     }
+ 
+     override fun fetchAll(onResult: (List<TrackingProtectionException>) -> Unit) {
+@@ -82,6 +76,9 @@
+         geckoEngineSession.notifyObservers {
+             onExcludedOnTrackingProtectionChange(false)
+         }
++        geckoEngineSession.geckoPermissions
++            .filter { it.isExcludedForTrackingProtection }
++            .forEach { remove(it) }
+         remove(url)
+     }
+ 
 --- a/mobile/android/android-components/components/feature/downloads/src/main/java/mozilla/components/feature/downloads/AbstractFetchDownloadService.kt
 +++ b/mobile/android/android-components/components/feature/downloads/src/main/java/mozilla/components/feature/downloads/AbstractFetchDownloadService.kt
 @@ -749,6 +749,10 @@
@@ -3087,7 +3118,7 @@
      <color name="novaPurple0">#fffaebff</color>
 --- a/mobile/android/app/geckoview-prefs.js
 +++ b/mobile/android/app/geckoview-prefs.js
-@@ -388,3 +388,88 @@
+@@ -388,3 +388,119 @@
  pref("browser.ipProtection.enabled", true);
  pref("browser.ipProtection.guardian.endpoint", "https://vpn.mozilla.org/");
  pref("toolkit.ipProtection.android.authProvider", "fxa");
@@ -3176,6 +3207,37 @@
 +pref("privacy.fingerprintingProtection", true);
 +pref("privacy.globalprivacycontrol.enabled", true);
 +pref("dom.push.enabled", false);
++
++pref("obscurant.lists.autoupdate", true);
++pref("obscurant.lists.interval_min", 360);
++pref("obscurant.lists.phishing_url", "https://curbengh.github.io/malware-filter/phishing-filter.txt");
++pref("obscurant.ai.hide", false);
++pref("obscurant.ai.skip", false);
++pref("obscurant.ai.images", false);
++pref("obscurant.ai.block_sites", false);
++pref("obscurant.sponsorblock.enabled", false);
++pref("obscurant.sponsorblock.cat.sponsor", true);
++pref("obscurant.sponsorblock.cat.selfpromo", true);
++pref("obscurant.sponsorblock.cat.interaction", true);
++pref("obscurant.sponsorblock.cat.intro", false);
++pref("obscurant.sponsorblock.cat.outro", false);
++pref("obscurant.sponsorblock.cat.preview", false);
++pref("obscurant.sponsorblock.cat.music_offtopic", false);
++pref("obscurant.cosmetic.enabled", true);
++
++pref("toolkit.telemetry.server", "data:,");
++pref("app.normandy.api_url", "");
++pref("nimbus.rollouts.enabled", false);
++pref("browser.region.update.enabled", false);
++pref("browser.discovery.enabled", false);
++pref("identity.fxaccounts.enabled", false);
++pref("privacy.query_stripping.enabled", true);
++pref("security.tls.enable_0rtt_data", false);
++pref("security.OCSP.enabled", 0);
++pref("browser.sessionhistory.max_total_viewers", 2);
++pref("browser.safebrowsing.provider.mozilla.updateURL", "");
++pref("browser.safebrowsing.provider.mozilla.gethashURL", "");
++pref("browser.safebrowsing.provider.mozilla.lists", "");
 --- a/mobile/android/fenix/app/build.gradle
 +++ b/mobile/android/fenix/app/build.gradle
 @@ -57,7 +57,7 @@
@@ -3205,6 +3267,14 @@
                      "deepLinkScheme": deepLinkSchemeValue,
              ])
          }
+@@ -454,6 +454,7 @@
+ }
+ 
+ dependencies {
++    implementation 'info.guardianproject:tor-android:0.4.9.17'
+     implementation project('longfox')
+     implementation project(':components:browser-engine-gecko')
+     implementation project(':components:compose-awesomebar')
 --- a/mobile/android/fenix/app/src/main/AndroidManifest.xml
 +++ b/mobile/android/fenix/app/src/main/AndroidManifest.xml
 @@ -503,6 +503,12 @@
@@ -3265,18 +3335,38 @@
       * Enables Firefox Labs.
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/HomeActivity.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/HomeActivity.kt
-@@ -436,6 +436,10 @@
+@@ -88,6 +88,11 @@
+ import mozilla.components.support.webextensions.WebExtensionPopupObserver
+ import mozilla.telemetry.glean.private.NoExtras
+ import org.mozilla.experiments.nimbus.initializeTooling
++import org.mozilla.fenix.shields.ObscurantCookies
++import org.mozilla.fenix.tools.ObscurantMemory
++import org.mozilla.fenix.voice.ObscurantVoice
++import org.mozilla.fenix.tools.ObscurantTor
++import org.mozilla.fenix.tools.playObscurantSplash
+ import org.mozilla.fenix.GleanMetrics.AppIcon
+ import org.mozilla.fenix.GleanMetrics.Events
+ import org.mozilla.fenix.GleanMetrics.Metrics
+@@ -436,6 +441,18 @@
          // Checks if Activity is currently in PiP mode if launched from external intents, then exits it
          checkAndExitPiP()
  
 +        if (savedInstanceState == null && ObscurantSetupActivity.shouldShow(this, intent)) {
 +            startActivity(Intent(this, ObscurantSetupActivity::class.java))
++        } else if (savedInstanceState == null && isTaskRoot && intent?.action == Intent.ACTION_MAIN) {
++            window.decorView.post { playObscurantSplash(this) }
++        }
++        ObscurantMemory.watch(this, this)
++        ObscurantVoice.attach(this)
++        window.decorView.post { ObscurantCookies.restore(this) }
++        if (savedInstanceState == null && ObscurantTor.isOn(this)) {
++            ObscurantTor.start(this)
 +        }
 +
          // Diagnostic breadcrumb for "Display already aquired" crash:
          // https://github.com/mozilla-mobile/android-components/issues/7960
          breadcrumb(
-@@ -731,6 +735,7 @@
+@@ -731,6 +748,7 @@
      @CallSuper
      override fun onResume() {
          super.onResume()
@@ -3286,7 +3376,7 @@
          // https://github.com/mozilla-mobile/android-components/issues/7960
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/ObscurantSetupActivity.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/ObscurantSetupActivity.kt
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,290 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3299,6 +3389,7 @@
 +import android.os.Build
 +import android.os.Bundle
 +import android.provider.Settings
++import androidx.activity.compose.BackHandler
 +import androidx.activity.compose.setContent
 +import androidx.activity.result.contract.ActivityResultContracts
 +import androidx.appcompat.app.AppCompatActivity
@@ -3379,6 +3470,8 @@
 +            val palette = obscurantPalettes.firstOrNull { it.name == theme }
 +            val base = if (palette?.isLight == true) acornLightColorScheme() else acornDarkColorScheme()
 +            val scheme = palette?.let { ObscurantThemes.apply(base, it) } ?: base
++
++            BackHandler { moveTaskToBack(true) }
 +
 +            MaterialTheme(colorScheme = scheme) {
 +                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -3594,6 +3687,46 @@
              channel = BuildConfig.BUILD_TYPE,
              // Need to send this value separately, since `isLargeScreenSize()` is a fenix extension
              isLargeScreenSize = context.isLargeScreenSize(),
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/menu/MenuDialogFragment.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/menu/MenuDialogFragment.kt
+@@ -71,6 +71,7 @@
+ import mozilla.components.support.utils.ext.isLandscape
+ import mozilla.components.support.utils.ext.top
+ import mozilla.telemetry.glean.private.NoExtras
++import org.mozilla.fenix.tools.ObscurantPasswordLock
+ import org.mozilla.fenix.GleanMetrics.Events
+ import org.mozilla.fenix.GleanMetrics.Vpn
+ import org.mozilla.fenix.R
+@@ -751,7 +752,9 @@
+                                         store.dispatch(MenuAction.Navigate.Downloads)
+                                     },
+                                     onPasswordsMenuClick = {
+-                                        store.dispatch(MenuAction.Navigate.Passwords)
++                                        ObscurantPasswordLock.require(requireActivity()) {
++                                            store.dispatch(MenuAction.Navigate.Passwords)
++                                        }
+                                     },
+                                     onCustomizeReaderViewMenuClick = {
+                                         store.dispatch(MenuAction.CustomizeReaderView)
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/menu/compose/MainMenu.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/menu/compose/MainMenu.kt
+@@ -51,6 +51,7 @@
+ import mozilla.components.service.fxa.manager.AccountState
+ import mozilla.components.service.fxa.manager.AccountState.AuthenticationProblem
+ import mozilla.components.service.fxa.store.Account
++import org.mozilla.fenix.tools.ObscurantToolsMenuItem
+ import org.mozilla.fenix.R
+ import org.mozilla.fenix.components.menu.MenuAccessPoint
+ import org.mozilla.fenix.components.menu.MenuDialogTestTag.DESKTOP_SITE_OFF
+@@ -313,6 +314,8 @@
+             )
+         }
+ 
++        ObscurantToolsMenuItem()
++
+         LibraryMenuGroup(
+             isDownloadHighlighted = isDownloadHighlighted,
+             onBookmarksMenuClick = onBookmarksMenuClick,
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/menu/compose/header/MozillaAccountMenuItem.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/menu/compose/header/MozillaAccountMenuItem.kt
 @@ -56,6 +56,8 @@
@@ -3614,6 +3747,102 @@
      val label: String
      val description: String?
      val contentDescription: String
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/toolbar/BrowserToolbarMiddleware.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/toolbar/BrowserToolbarMiddleware.kt
+@@ -6,6 +6,7 @@
+ 
+ import android.content.Context
+ import android.os.Build
++import android.os.Bundle
+ import androidx.annotation.VisibleForTesting
+ import androidx.navigation.NavController
+ import kotlinx.coroutines.CoroutineDispatcher
+@@ -80,6 +81,8 @@
+ import mozilla.components.support.ktx.util.URLStringUtils
+ import mozilla.components.support.utils.ClipboardHandler
+ import mozilla.telemetry.glean.private.NoExtras
++import org.mozilla.fenix.shields.ObscurantShieldSheet
++import org.mozilla.fenix.shields.obscurantShieldIcon
+ import org.mozilla.fenix.GleanMetrics.Events
+ import org.mozilla.fenix.GleanMetrics.ReaderMode
+ import org.mozilla.fenix.GleanMetrics.Translations
+@@ -161,6 +164,8 @@
+ @VisibleForTesting
+ internal sealed class StartPageActions(override val source: Source) : BrowserToolbarEvent {
+     data object SiteInfoClicked : StartPageActions(Source.AddressBar.PageStart)
++    data object ShieldClicked : StartPageActions(Source.AddressBar.PageStart)
++    data object MemoryClicked : StartPageActions(Source.AddressBar.PageStart)
+ }
+ 
+ @VisibleForTesting
+@@ -279,6 +284,25 @@
+                 observeIPProtectionUpdates(store)
+             }
+ 
++            is StartPageActions.MemoryClicked -> {
++                if (navController.currentDestination?.id == R.id.browserFragment) {
++                    navController.navigate(R.id.obscurantToolsSheet, Bundle().apply { putBoolean("memory", true) })
++                }
++                next(action)
++            }
++
++            is StartPageActions.ShieldClicked -> {
++                browserStore.state.selectedTab?.let { tab ->
++                    if (navController.currentDestination?.id == R.id.browserFragment) {
++                        navController.navigate(
++                            R.id.obscurantShieldSheet,
++                            Bundle().apply { putString(ObscurantShieldSheet.TAB_ID, tab.id) },
++                        )
++                    }
++                }
++                next(action)
++            }
++
+             is StartPageActions.SiteInfoClicked -> {
+                 onSiteInfoClicked()
+                 next(action)
+@@ -704,8 +728,31 @@
+         )
+     }
+ 
++    private fun buildShieldAction(): Action? {
++        val tab = browserStore.state.selectedTab ?: return null
++        if (!tab.content.url.startsWith("http://") && !tab.content.url.startsWith("https://")) {
++            return null
++        }
++        val protection = tab.trackingProtection
++        val up = protection.enabled && !protection.ignoredOnTrackingProtection
++        val count = protection.blockedTrackers.size
++        return Action.ActionButton(
++            drawable = obscurantShieldIcon(uiContext, up, count),
++            shouldTint = false,
++            contentDescription = if (up) "Obscurant Shields: $count blocked" else "Obscurant Shields are off",
++            onClick = StartPageActions.ShieldClicked,
++        )
++    }
++
+     private fun buildStartPageActions(): List<Action> {
+-        return listOf(
++        val memory = buildShieldAction()?.let {
++            ActionButtonRes(
++                drawableResId = iconsR.drawable.mozac_ic_tool_24,
++                contentDescription = R.string.obscurant_memory_button,
++                onClick = StartPageActions.MemoryClicked,
++            )
++        }
++        return listOfNotNull(buildShieldAction(), memory) + listOf(
+             ToolbarActionConfig(ToolbarAction.SiteInfo) {
+                 !browserScreenStore.state.readerModeStatus.isActive
+             },
+@@ -1063,7 +1110,7 @@
+         store: Store<BrowserToolbarState, BrowserToolbarAction>,
+     ) {
+         browserStore.observeWhileActive {
+-            distinctUntilChangedBy { it.selectedTab?.trackingProtection }
++            distinctUntilChangedBy { it.selectedTab?.trackingProtection to it.selectedTab?.content?.url }
+                 .collect { updateStartPageActions(store) }
+         }
+     }
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/downloads/DownloadService.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/downloads/DownloadService.kt
 @@ -4,6 +4,7 @@
@@ -3637,13 +3866,14 @@
              context = applicationContext,
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/downloads/VirusTotalCheck.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/downloads/VirusTotalCheck.kt
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,102 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +package org.mozilla.fenix.downloads
 +
++import org.mozilla.fenix.tools.ObscurantTor
 +import android.content.Context
 +import android.os.Handler
 +import android.os.Looper
@@ -3669,6 +3899,10 @@
 +        val key = PreferenceManager.getDefaultSharedPreferences(app).getString(KEY_PREF, "")?.trim().orEmpty()
 +        if (!keyPattern.matches(key)) {
 +            say(app, "VirusTotal: add your free key in Settings to check downloads")
++            return
++        }
++        if (ObscurantTor.isOn(context)) {
++            say(context.applicationContext, "VirusTotal: not checked while Tor is on")
 +            return
 +        }
 +        Thread {
@@ -3834,7 +4068,7 @@
  
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/home/ui/ObscurantHomeHeader.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/home/ui/ObscurantHomeHeader.kt
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,429 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -3843,121 +4077,714 @@
 +
 +import android.app.Activity
 +import android.text.format.DateFormat
++import androidx.activity.compose.BackHandler
 +import androidx.compose.foundation.Image
++import androidx.compose.foundation.background
 +import androidx.compose.foundation.border
 +import androidx.compose.foundation.clickable
++import androidx.compose.foundation.gestures.detectTransformGestures
++import androidx.compose.foundation.horizontalScroll
 +import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.BoxWithConstraints
 +import androidx.compose.foundation.layout.Column
 +import androidx.compose.foundation.layout.Row
 +import androidx.compose.foundation.layout.Spacer
 +import androidx.compose.foundation.layout.fillMaxWidth
 +import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.heightIn
 +import androidx.compose.foundation.layout.padding
 +import androidx.compose.foundation.layout.size
 +import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.rememberScrollState
++import androidx.compose.foundation.shape.CircleShape
 +import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.foundation.verticalScroll
++import androidx.compose.material3.AlertDialog
 +import androidx.compose.material3.Icon
 +import androidx.compose.material3.IconButton
 +import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
 +import androidx.compose.material3.Surface
++import androidx.compose.material3.Switch
 +import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
 +import androidx.compose.runtime.Composable
 +import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableIntStateOf
++import androidx.compose.runtime.mutableStateOf
 +import androidx.compose.runtime.produceState
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberUpdatedState
++import androidx.compose.runtime.setValue
 +import androidx.compose.ui.Alignment
 +import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.ColorFilter
++import androidx.compose.ui.graphics.ColorMatrix
++import androidx.compose.ui.graphics.graphicsLayer
++import androidx.compose.ui.input.pointer.pointerInput
 +import androidx.compose.ui.platform.LocalContext
 +import androidx.compose.ui.res.painterResource
++import androidx.compose.ui.text.font.Font
++import androidx.compose.ui.text.font.FontFamily
 +import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.text.style.TextOverflow
 +import androidx.compose.ui.unit.dp
 +import androidx.compose.ui.unit.sp
++import androidx.navigation.fragment.NavHostFragment
 +import kotlinx.coroutines.delay
++import org.mozilla.fenix.HomeActivity
 +import org.mozilla.fenix.R
++import org.mozilla.fenix.compose.Favicon
++import org.mozilla.fenix.ext.components
 +import org.mozilla.fenix.theme.ObscurantThemes
 +import java.util.Date
 +import mozilla.components.ui.icons.R as iconsR
 +
 +private const val CLOCK_REFRESH_MS = 5_000L
++private const val PAGE_HEIGHT_DP = 580
++private const val PANEL_HEIGHT_DP = 230
++private const val MAX_SHIFT = 1f
++private const val MIN_SCALE = 0.3f
++private const val MAX_SCALE = 4f
++private const val NAME_SP = 40
++private const val MIN_NAME_SP = 16
++private const val MAX_SHORTCUTS = 12
++private const val TINT_BOOST = 1.7f
 +
-+/** The Obscurant new tab page header: clock, logo, name and a private search field. */
++/** The Obscurant new tab page: wallpaper, clock, and the movable logo, name, search field and shortcuts. */
 +@Composable
 +internal fun ObscurantHomeHeader(
 +    onSearch: () -> Unit,
 +    onPrivateMode: () -> Unit,
 +) {
 +    val context = LocalContext.current
++    var config by remember { mutableStateOf(NewTabStore.load(context)) }
++    var editing by remember { mutableStateOf(false) }
++    val change: (NewTabConfig) -> Unit = {
++        config = it
++        NewTabStore.save(context, it)
++    }
 +    val time by produceState(initialValue = DateFormat.getTimeFormat(context).format(Date())) {
 +        while (true) {
 +            value = DateFormat.getTimeFormat(context).format(Date())
 +            delay(CLOCK_REFRESH_MS)
 +        }
 +    }
++    BackHandler(enabled = editing) { editing = false }
++    val onWall = if (config.wallpaper) Color.White else MaterialTheme.colorScheme.onSurface
 +
-+    Column(
-+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-+        horizontalAlignment = Alignment.CenterHorizontally,
++    Column(modifier = Modifier.fillMaxWidth()) {
++        BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(PAGE_HEIGHT_DP.dp).clip(RoundedCornerShape(0.dp))) {
++            val width = constraints.maxWidth.toFloat()
++            val height = constraints.maxHeight.toFloat()
++            if (config.wallpaper) {
++                ObscurantWallpaper(Modifier.matchParentSize())
++            }
++            Column(
++                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
++                horizontalAlignment = Alignment.CenterHorizontally,
++            ) {
++                Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
++                    TopButton(iconsR.drawable.mozac_ic_edit_24, "Customize new tab", onWall) { editing = !editing }
++                    TopButton(iconsR.drawable.mozac_ic_themes_24, "Obscurant themes", onWall) {
++                        (context as? Activity)?.let { ObscurantThemes.showChooser(it) }
++                    }
++                    TopButton(iconsR.drawable.mozac_ic_private_mode_24, "Private browsing", onWall, onPrivateMode)
++                }
++                Text(text = time, fontSize = 44.sp, fontWeight = FontWeight.Light, color = onWall)
++                Spacer(Modifier.height(8.dp))
++                Movable("logo", config, editing, width, height, change) {
++                    Image(
++                        painter = painterResource(R.drawable.obscurant_launcher_fg),
++                        contentDescription = "Obscurant logo",
++                        colorFilter = config.logoColor?.let { tintKeepingShading(Color(it)) },
++                        modifier = Modifier.size(150.dp),
++                    )
++                }
++                Movable("name", config, editing, width, height, change) {
++                    FittedName(config.font, Color(config.nameColor))
++                }
++                Spacer(Modifier.height(18.dp))
++                Movable("search", config, editing, width, height, change) {
++                    SearchField(enabled = !editing, onSearch = onSearch)
++                }
++                Spacer(Modifier.height(22.dp))
++                Movable("sites", config, editing, width, height, change) {
++                    Shortcuts(config.shortcuts ?: defaultShortcuts, onWall, enabled = !editing)
++                }
++            }
++            if (editing) {
++                Box(
++                    modifier = Modifier
++                        .align(Alignment.BottomCenter)
++                        .heightIn(max = PANEL_HEIGHT_DP.dp)
++                        .verticalScroll(rememberScrollState()),
++                ) {
++                    CustomizePanel(config, change) { editing = false }
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun TopButton(icon: Int, label: String, tint: Color, onClick: () -> Unit) {
++    IconButton(onClick = onClick) {
++        Icon(painter = painterResource(icon), contentDescription = label, tint = tint)
++    }
++}
++
++/** Colors the logo while keeping its light and dark areas. */
++private fun tintKeepingShading(color: Color): ColorFilter {
++    fun row(channel: Float) = floatArrayOf(
++        0.299f * channel * TINT_BOOST,
++        0.587f * channel * TINT_BOOST,
++        0.114f * channel * TINT_BOOST,
++        0f,
++        0f,
++    )
++    return ColorFilter.colorMatrix(
++        ColorMatrix(row(color.red) + row(color.green) + row(color.blue) + floatArrayOf(0f, 0f, 0f, 1f, 0f)),
++    )
++}
++
++/** While customizing, a block can be dragged with one finger and resized or turned with two. */
++@Composable
++private fun Movable(
++    key: String,
++    config: NewTabConfig,
++    editing: Boolean,
++    pageWidth: Float,
++    pageHeight: Float,
++    onChange: (NewTabConfig) -> Unit,
++    content: @Composable () -> Unit,
++) {
++    val place = config.layout[key] ?: Placement()
++    val latest by rememberUpdatedState(config)
++    var modifier = Modifier.graphicsLayer {
++        translationX = place.x * pageWidth
++        translationY = place.y * pageHeight
++        scaleX = place.scale
++        scaleY = place.scale
++        rotationZ = place.rotation
++    }
++    if (editing) {
++        modifier = modifier
++            .border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
++            .pointerInput(key) {
++                detectTransformGestures { _, pan, zoom, turn ->
++                    val now = latest.layout[key] ?: Placement()
++                    val angle = Math.toRadians(now.rotation.toDouble())
++                    // The gesture is measured in the block's own turned and scaled space.
++                    val dx = (pan.x * Math.cos(angle) - pan.y * Math.sin(angle)).toFloat() * now.scale
++                    val dy = (pan.x * Math.sin(angle) + pan.y * Math.cos(angle)).toFloat() * now.scale
++                    val moved = Placement(
++                        (now.x + dx / pageWidth).coerceIn(-MAX_SHIFT, MAX_SHIFT),
++                        (now.y + dy / pageHeight).coerceIn(-MAX_SHIFT, MAX_SHIFT),
++                        (now.scale * zoom).coerceIn(MIN_SCALE, MAX_SCALE),
++                        (now.rotation + turn) % 360f,
++                    )
++                    onChange(latest.copy(layout = latest.layout + (key to moved)))
++                }
++            }
++    }
++    Box(modifier = modifier) { content() }
++}
++
++@Composable
++private fun FittedName(font: Int, color: Color) {
++    val family = remember(font) { FontFamily(Font(newTabFonts[font].second)) }
++    var size by remember(font) { mutableIntStateOf(NAME_SP) }
++    Text(
++        text = "Obscurant",
++        fontFamily = family,
++        fontSize = size.sp,
++        color = color,
++        maxLines = 1,
++        softWrap = false,
++        onTextLayout = {
++            if (it.didOverflowWidth && size > MIN_NAME_SP) {
++                size -= 2
++            }
++        },
++    )
++}
++
++@Composable
++private fun SearchField(enabled: Boolean, onSearch: () -> Unit) {
++    Surface(
++        modifier = Modifier
++            .fillMaxWidth()
++            .height(52.dp)
++            .border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(26.dp))
++            .clickable(enabled = enabled, onClick = onSearch),
++        shape = RoundedCornerShape(26.dp),
++        color = MaterialTheme.colorScheme.surfaceContainerHigh,
 +    ) {
-+        Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
-+            IconButton(onClick = { (context as? Activity)?.let { ObscurantThemes.showChooser(it) } }) {
-+                Icon(
-+                    painter = painterResource(iconsR.drawable.mozac_ic_themes_24),
-+                    contentDescription = "Obscurant themes",
-+                    tint = MaterialTheme.colorScheme.onSurface,
-+                )
++        Row(modifier = Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
++            Icon(
++                painter = painterResource(iconsR.drawable.mozac_ic_search_24),
++                contentDescription = null,
++                tint = MaterialTheme.colorScheme.primary,
++            )
++            Spacer(Modifier.width(12.dp))
++            Text(text = "Search privately", color = MaterialTheme.colorScheme.onSurfaceVariant)
++        }
++    }
++}
++
++@Composable
++private fun Shortcuts(sites: List<Shortcut>, textColor: Color, enabled: Boolean) {
++    val context = LocalContext.current
++    Row(
++        modifier = Modifier.horizontalScroll(rememberScrollState()),
++        horizontalArrangement = Arrangement.spacedBy(14.dp),
++    ) {
++        sites.forEach { site ->
++            Column(
++                modifier = Modifier
++                    .width(72.dp)
++                    .clickable(enabled = enabled) {
++                        val host = (context as? HomeActivity)?.supportFragmentManager?.findFragmentById(R.id.container)
++                        (host as? NavHostFragment)?.navController?.let {
++                            it.navigate(R.id.browserFragment)
++                            context.components.useCases.fenixBrowserUseCases.loadUrlOrSearch(
++                                searchTermOrURL = site.url,
++                                newTab = true,
++                                private = false,
++                            )
++                        }
++                    },
++                horizontalAlignment = Alignment.CenterHorizontally,
++            ) {
++                Box(
++                    modifier = Modifier.size(52.dp)
++                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape),
++                    contentAlignment = Alignment.Center,
++                ) {
++                    Favicon(url = site.url, size = 28.dp)
++                }
++                Text(text = site.title, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = textColor)
 +            }
-+            IconButton(onClick = onPrivateMode) {
-+                Icon(
-+                    painter = painterResource(iconsR.drawable.mozac_ic_private_mode_24),
-+                    contentDescription = "Private browsing",
-+                    tint = MaterialTheme.colorScheme.onSurface,
++        }
++    }
++}
++
++@Composable
++private fun CustomizePanel(config: NewTabConfig, onChange: (NewTabConfig) -> Unit, onDone: () -> Unit) {
++    var editShortcuts by remember { mutableStateOf(false) }
++    Column(
++        modifier = Modifier
++            .fillMaxWidth()
++            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
++            .padding(16.dp),
++    ) {
++        Text("Customize", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
++        Text(
++            "Drag a block to move it. Pinch to resize it, and twist two fingers to rotate it.",
++            fontSize = 12.sp,
++            color = MaterialTheme.colorScheme.onSurfaceVariant,
++        )
++        Label("Name font")
++        Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
++            newTabFonts.forEachIndexed { index, (name, _) ->
++                TextButton(onClick = { onChange(config.copy(font = index)) }) {
++                    Text(if (index == config.font) "$name ✓" else name)
++                }
++            }
++        }
++        Label("Name color")
++        Swatches(config.nameColor) { onChange(config.copy(nameColor = it)) }
++        Label("Logo color")
++        Swatches(config.logoColor) { onChange(config.copy(logoColor = it)) }
++        TextButton(onClick = { onChange(config.copy(logoColor = null)) }) { Text("Original logo") }
++        Row(verticalAlignment = Alignment.CenterVertically) {
++            Text("Wallpaper", color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
++            Switch(checked = config.wallpaper, onCheckedChange = { onChange(config.copy(wallpaper = it)) })
++        }
++        TextButton(onClick = { editShortcuts = true }) { Text("Edit shortcuts") }
++        TextButton(onClick = { onChange(config.copy(layout = emptyMap())) }) { Text("Reset positions") }
++        TextButton(onClick = { onChange(NewTabConfig()) }) { Text("Reset everything") }
++        TextButton(onClick = onDone) { Text("Done") }
++    }
++    if (editShortcuts) {
++        ShortcutEditor(config.shortcuts ?: defaultShortcuts, { onChange(config.copy(shortcuts = it)) }) {
++            editShortcuts = false
++        }
++    }
++}
++
++@Composable
++private fun Label(text: String) {
++    Text(text, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
++}
++
++@Composable
++private fun Swatches(selected: Long?, onPick: (Long) -> Unit) {
++    Row(
++        modifier = Modifier.horizontalScroll(rememberScrollState()),
++        horizontalArrangement = Arrangement.spacedBy(10.dp),
++    ) {
++        newTabSwatches.forEach { value ->
++            Box(
++                modifier = Modifier
++                    .size(34.dp)
++                    .background(Color(value), CircleShape)
++                    .border(
++                        width = if (value == selected) 3.dp else 1.dp,
++                        color = MaterialTheme.colorScheme.onSurface,
++                        shape = CircleShape,
++                    )
++                    .clickable { onPick(value) },
++            )
++        }
++    }
++}
++
++@Composable
++private fun ShortcutEditor(sites: List<Shortcut>, onChange: (List<Shortcut>) -> Unit, onClose: () -> Unit) {
++    var title by remember { mutableStateOf("") }
++    var address by remember { mutableStateOf("") }
++    var problem by remember { mutableStateOf(false) }
++    AlertDialog(
++        onDismissRequest = onClose,
++        title = { Text("Shortcuts") },
++        confirmButton = { TextButton(onClick = onClose) { Text("Done") } },
++        text = {
++            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
++                sites.forEachIndexed { index, site ->
++                    Row(verticalAlignment = Alignment.CenterVertically) {
++                        Text(site.title, maxLines = 1, modifier = Modifier.weight(1f))
++                        TextButton(
++                            enabled = index > 0,
++                            onClick = {
++                                val moved = sites.toMutableList()
++                                moved.add(index - 1, moved.removeAt(index))
++                                onChange(moved)
++                            },
++                        ) { Text("Up") }
++                        TextButton(onClick = { onChange(sites - site) }) { Text("Remove") }
++                    }
++                }
++                if (sites.size < MAX_SHORTCUTS) {
++                    OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Name") })
++                    OutlinedTextField(
++                        value = address,
++                        onValueChange = {
++                            address = it
++                            problem = false
++                        },
++                        label = { Text("Address") },
++                        isError = problem,
++                        singleLine = true,
++                    )
++                    TextButton(
++                        onClick = {
++                            val url = cleanShortcutUrl(address)
++                            if (url == null) {
++                                problem = true
++                            } else {
++                                onChange(sites + Shortcut(title.ifBlank { url.substringAfter("://") }, url))
++                                title = ""
++                                address = ""
++                            }
++                        },
++                    ) { Text("Add shortcut") }
++                }
++            }
++        },
++    )
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/home/ui/ObscurantNewTabConfig.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/home/ui/ObscurantNewTabConfig.kt
+@@ -0,0 +1,142 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.home.ui
++
++import android.content.Context
++import androidx.core.net.toUri
++import androidx.preference.PreferenceManager
++import org.json.JSONArray
++import org.json.JSONException
++import org.json.JSONObject
++import org.mozilla.fenix.R
++import mozilla.components.support.base.log.logger.Logger
++
++private const val CONFIG_PREF = "obscurant_newtab_config"
++private const val MAX_SHORTCUTS = 12
++private const val MAX_TITLE = 40
++
++internal data class Shortcut(val title: String, val url: String)
++
++/** Where a movable block sits: offset as a share of the page, size and rotation. */
++internal data class Placement(val x: Float = 0f, val y: Float = 0f, val scale: Float = 1f, val rotation: Float = 0f)
++
++/** The same choices the desktop new tab page saves. A null color or list means the default. */
++internal data class NewTabConfig(
++    val font: Int = 0,
++    val nameColor: Long = 0xFFFFFFFF,
++    val logoColor: Long? = null,
++    val shortcuts: List<Shortcut>? = null,
++    val wallpaper: Boolean = true,
++    val layout: Map<String, Placement> = emptyMap(),
++)
++
++internal val newTabFonts = listOf(
++    "Rubik 80s Fade" to R.font.obscurant_font_0,
++    "Alumni Sans Collegiate One" to R.font.obscurant_font_1,
++    "Londrina Sketch" to R.font.obscurant_font_2,
++    "Kablammo" to R.font.obscurant_font_3,
++    "Honk" to R.font.obscurant_font_4,
++    "Astloch" to R.font.obscurant_font_5,
++    "Danfo" to R.font.obscurant_font_6,
++    "Bungee Hairline" to R.font.obscurant_font_7,
++    "Rubik Puddles" to R.font.obscurant_font_8,
++    "Akronim" to R.font.obscurant_font_9,
++    "Rubik Distressed" to R.font.obscurant_font_10,
++    "Raleway Dots" to R.font.obscurant_font_11,
++    "Silkscreen" to R.font.obscurant_font_12,
++    "Sixtyfour" to R.font.obscurant_font_13,
++)
++
++internal val newTabSwatches =
++    listOf(0xFFFF5500, 0xFFFFB020, 0xFF3DDC97, 0xFF2FD0FF, 0xFF6B8CFF, 0xFFA66BFF, 0xFFFF5FA2, 0xFFFFFFFF)
++
++internal val defaultShortcuts = listOf(
++    Shortcut("DuckDuckGo", "https://duckduckgo.com/"),
++    Shortcut("Startpage", "https://www.startpage.com/"),
++    Shortcut("Brave Search", "https://search.brave.com/"),
++)
++
++/** A web address the page may open, or null. Typing a bare host name is allowed. */
++internal fun cleanShortcutUrl(value: String): String? {
++    val text = value.trim()
++    if (text.isEmpty() || text.any { it.isWhitespace() }) {
++        return null
++    }
++    val full = if ("://" in text) text else "https://$text"
++    val uri = full.toUri()
++    val web = uri.scheme == "http" || uri.scheme == "https"
++    return full.takeIf { web && uri.host?.contains('.') == true }
++}
++
++internal object NewTabStore {
++    private fun prefs(context: Context) =
++        PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++
++    fun load(context: Context): NewTabConfig {
++        val text = prefs(context).getString(CONFIG_PREF, null) ?: return NewTabConfig()
++        return try {
++            parse(JSONObject(text))
++        } catch (e: JSONException) {
++            Logger("ObscurantNewTab").warn("saved new tab settings are damaged", e)
++            NewTabConfig()
++        }
++    }
++
++    private fun parse(json: JSONObject): NewTabConfig {
++        val shortcuts = json.optJSONArray("shortcuts")?.let { list ->
++            (0 until list.length()).mapNotNull { index ->
++                val item = list.getJSONObject(index)
++                cleanShortcutUrl(item.optString("url"))
++                    ?.let { Shortcut(item.optString("title").take(MAX_TITLE), it) }
++            }.take(MAX_SHORTCUTS)
++        }
++        val layout = mutableMapOf<String, Placement>()
++        json.optJSONObject("layout")?.let { saved ->
++            saved.keys().forEach { key ->
++                val item = saved.getJSONObject(key)
++                layout[key] = Placement(
++                    item.optDouble("x", 0.0).toFloat(),
++                    item.optDouble("y", 0.0).toFloat(),
++                    item.optDouble("s", 1.0).toFloat(),
++                    item.optDouble("r", 0.0).toFloat(),
 +                )
 +            }
 +        }
-+        Text(
-+            text = time,
-+            fontSize = 44.sp,
-+            fontWeight = FontWeight.Light,
-+            color = MaterialTheme.colorScheme.onSurface,
++        return NewTabConfig(
++            font = json.optInt("font", 0).coerceIn(0, newTabFonts.lastIndex),
++            nameColor = json.optLong("nameColor", 0xFFFFFFFF),
++            logoColor = if (json.has("logoColor")) json.getLong("logoColor") else null,
++            shortcuts = shortcuts,
++            wallpaper = json.optBoolean("wallpaper", true),
++            layout = layout,
 +        )
-+        Spacer(Modifier.height(12.dp))
-+        Image(
-+            painter = painterResource(R.drawable.obscurant_launcher_fg),
-+            contentDescription = null,
-+            modifier = Modifier.size(132.dp),
-+        )
-+        Text(
-+            text = "Obscurant",
-+            fontSize = 30.sp,
-+            fontWeight = FontWeight.Bold,
-+            letterSpacing = 1.sp,
-+            color = MaterialTheme.colorScheme.onSurface,
-+        )
-+        Spacer(Modifier.height(20.dp))
-+        Surface(
-+            modifier = Modifier
-+                .fillMaxWidth()
-+                .height(52.dp)
-+                .border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(26.dp))
-+                .clickable(onClick = onSearch),
-+            shape = RoundedCornerShape(26.dp),
-+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-+        ) {
-+            Row(modifier = Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-+                Icon(
-+                    painter = painterResource(iconsR.drawable.mozac_ic_search_24),
-+                    contentDescription = null,
-+                    tint = MaterialTheme.colorScheme.primary,
-+                )
-+                Spacer(Modifier.width(12.dp))
-+                Text(text = "Search privately", color = MaterialTheme.colorScheme.onSurfaceVariant)
++    }
++
++    fun save(context: Context, config: NewTabConfig) {
++        val json = JSONObject()
++            .put("font", config.font)
++            .put("nameColor", config.nameColor)
++            .put("wallpaper", config.wallpaper)
++        config.logoColor?.let { json.put("logoColor", it) }
++        config.shortcuts?.let { list ->
++            val array = JSONArray()
++            list.forEach { array.put(JSONObject().put("title", it.title).put("url", it.url)) }
++            json.put("shortcuts", array)
++        }
++        val layout = JSONObject()
++        config.layout.forEach { (key, place) ->
++            layout.put(
++                key,
++                JSONObject()
++                    .put("x", place.x.toDouble())
++                    .put("y", place.y.toDouble())
++                    .put("s", place.scale.toDouble())
++                    .put("r", place.rotation.toDouble()),
++            )
++        }
++        json.put("layout", layout)
++        prefs(context).edit().putString(CONFIG_PREF, json.toString()).apply()
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/home/ui/ObscurantScene.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/home/ui/ObscurantScene.kt
+@@ -0,0 +1,128 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++@file:Suppress("MagicNumber")
++
++package org.mozilla.fenix.home.ui
++
++import androidx.compose.animation.Crossfade
++import androidx.compose.animation.core.tween
++import androidx.compose.foundation.Canvas
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableIntStateOf
++import androidx.compose.runtime.saveable.rememberSaveable
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.geometry.Offset
++import androidx.compose.ui.geometry.Size
++import androidx.compose.ui.graphics.Brush
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.Path
++import androidx.compose.ui.graphics.drawscope.DrawScope
++import androidx.compose.ui.graphics.drawscope.clipRect
++import androidx.compose.ui.graphics.drawscope.scale
++import androidx.compose.ui.graphics.drawscope.translate
++import kotlinx.coroutines.delay
++import kotlin.random.Random
++
++private const val WIDTH = 1600f
++private const val HEIGHT = 900f
++private const val CHANGE_MS = 30_000L
++private const val FADE_MS = 1_600
++
++private class Scene(
++    val sky: List<Long>,
++    val sunX: Float,
++    val sunY: Float,
++    val sun: Long,
++    val ridges: List<Long>,
++    val stars: Boolean = false,
++)
++
++private val SCENES = listOf(
++    Scene(listOf(0xFF2B1B4A, 0xFFD4577B, 0xFFFFB36B), 0.7f, 0.62f, 0xFFFFE1A8,
++        listOf(0xFF4A2A5E, 0xFF35214F, 0xFF1F1636, 0xFF120D22)),
++    Scene(listOf(0xFF0F2A4A, 0xFF3F7FB5, 0xFFBFE0F2), 0.25f, 0.3f, 0xFFFFFFFF,
++        listOf(0xFF7EA4C4, 0xFF4F7899, 0xFF2C4A66, 0xFF14283B)),
++    Scene(listOf(0xFF0D1030, 0xFF4A2F6D, 0xFFE0728A), 0.35f, 0.68f, 0xFFFFC7A0,
++        listOf(0xFF5A2F66, 0xFF3B2253, 0xFF241638, 0xFF0F0A1C)),
++    Scene(listOf(0xFF0C2A2C, 0xFF2F6B63, 0xFFC5E3B5), 0.8f, 0.45f, 0xFFF4F7C9,
++        listOf(0xFF3C7A62, 0xFF275C4B, 0xFF173D34, 0xFF0B221D)),
++    Scene(listOf(0xFF1C1F45, 0xFFB2536A, 0xFFF5B46B), 0.5f, 0.55f, 0xFFFFF0C2,
++        listOf(0xFFC4694D, 0xFF9A4B43, 0xFF6B3340, 0xFF3A1D2E)),
++    Scene(listOf(0xFF04060F, 0xFF10183A, 0xFF2A3A72), 0.78f, 0.22f, 0xFFE6ECFF,
++        listOf(0xFF26356A, 0xFF1A244D, 0xFF10173A, 0xFF080B1F), stars = true),
++)
++
++/** Draws one landscape in the desktop page's 1600 by 900 coordinates. */
++private fun DrawScope.drawScene(scene: Scene, seed: Int) {
++    val random = Random(seed)
++    drawRect(Brush.verticalGradient(scene.sky.map { Color(it) }, 0f, HEIGHT), size = Size(WIDTH, HEIGHT))
++    if (scene.stars) {
++        repeat(120) {
++            drawCircle(
++                color = Color.White.copy(alpha = 0.3f + random.nextFloat() * 0.6f),
++                radius = 0.6f + random.nextFloat() * 1.4f,
++                center = Offset(random.nextFloat() * WIDTH, random.nextFloat() * HEIGHT * 0.6f),
++            )
++        }
++    }
++    val sun = Offset(scene.sunX * WIDTH, scene.sunY * HEIGHT)
++    drawCircle(
++        brush = Brush.radialGradient(listOf(Color(scene.sun).copy(alpha = 0.95f), Color.Transparent), sun, 260f),
++        radius = 260f,
++        center = sun,
++    )
++    drawCircle(Color(scene.sun), 46f, sun)
++    scene.ridges.forEachIndexed { layer, color ->
++        val base = HEIGHT * (0.52f + layer * 0.12f)
++        val amplitude = 150f - layer * 28f
++        var y = base
++        val path = Path().apply {
++            moveTo(0f, HEIGHT)
++            lineTo(0f, base)
++            var x = 0f
++            while (x <= WIDTH) {
++                y = (y + (random.nextFloat() - 0.5f) * amplitude * 0.5f)
++                    .coerceIn(base - amplitude, base + amplitude * 0.3f)
++                lineTo(x, y)
++                x += 40f
++            }
++            lineTo(WIDTH, HEIGHT)
++            close()
++        }
++        drawPath(path, Color(color))
++    }
++    drawRect(Color.Black.copy(alpha = 0.12f), Offset(0f, HEIGHT * 0.78f), Size(WIDTH, HEIGHT * 0.22f))
++}
++
++/** The changing wallpaper behind the new tab page. The slice shown is centered on the sun. */
++@Composable
++internal fun ObscurantWallpaper(modifier: Modifier = Modifier) {
++    var index by rememberSaveable { mutableIntStateOf(Random.nextInt(SCENES.size)) }
++    var seed by rememberSaveable { mutableIntStateOf(Random.nextInt()) }
++    LaunchedEffect(Unit) {
++        while (true) {
++            delay(CHANGE_MS)
++            index = (index + 1) % SCENES.size
++            seed = Random.nextInt()
++        }
++    }
++    Crossfade(targetState = index to seed, animationSpec = tween(FADE_MS), modifier = modifier, label = "wallpaper") { (shownIndex, shownSeed) ->
++        val scene = SCENES[shownIndex]
++        Canvas(Modifier.fillMaxSize()) {
++            val factor = maxOf(size.width / WIDTH, size.height / HEIGHT)
++            val shown = size.width / factor
++            val left = (scene.sunX * WIDTH - shown / 2).coerceIn(0f, WIDTH - shown)
++            clipRect {
++                scale(factor, factor, Offset.Zero) {
++                    translate(-left, 0f) { drawScene(scene, shownSeed) }
++                }
 +            }
 +        }
-+        Spacer(Modifier.height(8.dp))
 +    }
 +}
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/SettingsFragment.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/SettingsFragment.kt
-@@ -191,7 +191,7 @@
+@@ -52,6 +52,7 @@
+ import mozilla.components.support.utils.ext.navigateToDefaultBrowserAppsSettings
+ import mozilla.components.ui.widgets.withCenterAlignedButtons
+ import mozilla.telemetry.glean.private.NoExtras
++import org.mozilla.fenix.tools.ObscurantPasswordLock
+ import org.mozilla.fenix.Config
+ import org.mozilla.fenix.FeatureFlags
+ import org.mozilla.fenix.GleanMetrics.Addons
+@@ -191,7 +192,7 @@
  
          findPreference<Preference>(
              getPreferenceKey(R.string.pref_key_translation),
@@ -3966,7 +4793,7 @@
              components.core.store.state.translationEngine.isEngineSupported == true
  
          findPreference<Preference>(
-@@ -205,6 +205,17 @@
+@@ -205,6 +206,17 @@
  
      override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
          setPreferencesFromResource(R.xml.preferences, rootKey)
@@ -3984,7 +4811,7 @@
      }
  
      override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-@@ -268,6 +279,8 @@
+@@ -268,6 +280,8 @@
              settings = requireComponents.settings,
          )
  
@@ -3993,7 +4820,7 @@
          requireView().findViewById<RecyclerView>(R.id.recycler_view)
              ?.hideInitialScrollBar(viewLifecycleOwner.lifecycleScope)
  
-@@ -278,6 +291,19 @@
+@@ -278,6 +292,19 @@
          creatingFragment = false
      }
  
@@ -4013,7 +4840,20 @@
      override fun onStart() {
          super.onStart()
          // Observe account changes to keep the UI up-to-date.
-@@ -552,6 +578,21 @@
+@@ -386,8 +413,10 @@
+             }
+ 
+             resources.getString(R.string.pref_key_passwords) -> {
+-                SettingsMetrics.passwords.record()
+-                SettingsFragmentDirections.actionSettingsFragmentToSavedLoginsAuthFragment()
++                ObscurantPasswordLock.require(requireActivity()) {
++                    findNavController().navigate(SettingsFragmentDirections.actionSettingsFragmentToSavedLoginsAuthFragment())
++                }
++                null
+             }
+ 
+             resources.getString(R.string.pref_key_email_masks) -> {
+@@ -552,6 +581,21 @@
                  null
              }
  
@@ -4035,118 +4875,577 @@
              resources.getString(R.string.pref_key_about) -> {
                  SettingsFragmentDirections.actionSettingsFragmentToAboutFragment()
              }
---- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/trustpanel/ui/ObscurantShields.kt
-+++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/trustpanel/ui/ObscurantShields.kt
-@@ -0,0 +1,116 @@
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/shields/ObscurantCookies.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/shields/ObscurantCookies.kt
+@@ -0,0 +1,54 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
-+package org.mozilla.fenix.settings.trustpanel.ui
++package org.mozilla.fenix.shields
 +
 +import android.content.Context
-+import androidx.compose.foundation.layout.Arrangement
-+import androidx.compose.foundation.layout.Column
-+import androidx.compose.foundation.layout.Row
-+import androidx.compose.foundation.layout.fillMaxWidth
-+import androidx.compose.foundation.layout.padding
-+import androidx.compose.foundation.selection.toggleable
-+import androidx.compose.material3.MaterialTheme
-+import androidx.compose.material3.Switch
-+import androidx.compose.material3.Text
-+import androidx.compose.runtime.Composable
-+import androidx.compose.runtime.getValue
-+import androidx.compose.runtime.mutableStateOf
-+import androidx.compose.runtime.remember
-+import androidx.compose.runtime.setValue
-+import androidx.compose.ui.Alignment
-+import androidx.compose.ui.Modifier
-+import androidx.compose.ui.platform.LocalContext
-+import androidx.compose.ui.semantics.Role
-+import androidx.compose.ui.unit.dp
 +import androidx.preference.PreferenceManager
 +import mozilla.components.ExperimentalAndroidComponentsApi
 +import mozilla.components.concept.engine.preferences.Branch
 +import mozilla.components.concept.engine.preferences.BrowserPreferencesRuntime
 +import mozilla.components.support.base.log.logger.Logger
-+import org.mozilla.fenix.components.menu.compose.MenuGroup
 +import org.mozilla.fenix.ext.components
 +
++private const val ENGINE_PREF = "network.cookie.cookieBehavior"
++private const val SAVED_PREF = "obscurant_cookie_behavior"
++
++/** The cookie choice from the desktop shield panel. */
++@OptIn(ExperimentalAndroidComponentsApi::class)
++object ObscurantCookies {
++    const val PER_SITE = 5
++    private const val BLOCK_THIRD_PARTY = 1
++    private const val BLOCK_ALL = 2
++
++    val choices = listOf(
++        PER_SITE to "Per-site jars",
++        BLOCK_THIRD_PARTY to "Block third-party",
++        BLOCK_ALL to "Block all",
++    )
++
++    fun current(context: Context): Int =
++        PreferenceManager.getDefaultSharedPreferences(context.applicationContext).getInt(SAVED_PREF, PER_SITE)
++
++    fun set(context: Context, value: Int) {
++        PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++            .edit().putInt(SAVED_PREF, value).apply()
++        apply(context, value)
++    }
++
++    private fun apply(context: Context, value: Int) {
++        val engine = context.components.core.engine as? BrowserPreferencesRuntime ?: return
++        engine.setBrowserPref(ENGINE_PREF, value, Branch.USER, {}) {
++            Logger("ObscurantCookies").error("could not set the cookie rule", it)
++        }
++    }
++
++    /** The app sets its own cookie rule while starting, so a stricter choice is put back afterwards. */
++    fun restore(context: Context) {
++        val value = current(context)
++        if (value != PER_SITE) {
++            apply(context, value)
++        }
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/shields/ObscurantShieldIcon.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/shields/ObscurantShieldIcon.kt
+@@ -0,0 +1,53 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.shields
++
++import android.content.Context
++import android.graphics.Canvas
++import android.graphics.Paint
++import android.graphics.Typeface
++import android.graphics.drawable.BitmapDrawable
++import android.graphics.drawable.Drawable
++import androidx.appcompat.content.res.AppCompatResources
++import androidx.core.graphics.createBitmap
++import mozilla.components.support.ktx.android.content.getColorFromAttr
++import androidx.appcompat.R as appcompatR
++import com.google.android.material.R as materialR
++import mozilla.components.ui.icons.R as iconsR
++
++private const val SIZE_DP = 24f
++private const val ICON_DP = 22f
++private const val BADGE_RADIUS_DP = 7f
++private const val BADGE_TEXT_DP = 9f
++private const val MAX_BADGE = 99
++
++/** The address bar shield: crossed out when off for the site, with the number of blocked items when on. */
++internal fun obscurantShieldIcon(context: Context, up: Boolean, count: Int): Drawable {
++    val density = context.resources.displayMetrics.density
++    val size = (SIZE_DP * density).toInt()
++    val bitmap = createBitmap(size, size)
++    val canvas = Canvas(bitmap)
++    val shield = if (up) iconsR.drawable.mozac_ic_shield_24 else iconsR.drawable.mozac_ic_shield_slash_24
++    AppCompatResources.getDrawable(context, shield)?.mutate()?.let {
++        val tint = if (up) appcompatR.attr.colorPrimary else materialR.attr.colorOnSurface
++        it.setTint(context.getColorFromAttr(tint))
++        val side = (ICON_DP * density).toInt()
++        it.setBounds(0, 0, side, side)
++        it.draw(canvas)
++    }
++    if (up && count > 0) {
++        val radius = BADGE_RADIUS_DP * density
++        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
++        paint.color = context.getColorFromAttr(appcompatR.attr.colorPrimary)
++        canvas.drawCircle(size - radius, size - radius, radius, paint)
++        paint.color = context.getColorFromAttr(materialR.attr.colorOnPrimary)
++        paint.textAlign = Paint.Align.CENTER
++        paint.typeface = Typeface.DEFAULT_BOLD
++        paint.textSize = BADGE_TEXT_DP * density
++        val text = if (count > MAX_BADGE) "99" else count.toString()
++        canvas.drawText(text, size - radius, size - radius - (paint.ascent() + paint.descent()) / 2, paint)
++    }
++    return BitmapDrawable(context.resources, bitmap)
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/shields/ObscurantShieldSheet.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/shields/ObscurantShieldSheet.kt
+@@ -0,0 +1,462 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.shields
++
++import android.os.Bundle
++import android.view.LayoutInflater
++import android.view.View
++import android.view.ViewGroup
++import androidx.compose.foundation.background
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.rememberScrollState
++import androidx.compose.foundation.selection.selectable
++import androidx.compose.foundation.selection.toggleable
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.foundation.verticalScroll
++import androidx.compose.material3.HorizontalDivider
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.RadioButton
++import androidx.compose.material3.Switch
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateMapOf
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.saveable.rememberSaveable
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.ComposeView
++import androidx.compose.ui.semantics.Role
++import androidx.compose.ui.semantics.contentDescription
++import androidx.compose.ui.semantics.semantics
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.text.style.TextAlign
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import androidx.core.net.toUri
++import androidx.navigation.fragment.findNavController
++import com.google.android.material.bottomsheet.BottomSheetBehavior
++import com.google.android.material.bottomsheet.BottomSheetDialog
++import com.google.android.material.bottomsheet.BottomSheetDialogFragment
++import mozilla.components.ExperimentalAndroidComponentsApi
++import mozilla.components.browser.state.selector.findTab
++import mozilla.components.browser.state.state.TabSessionState
++import mozilla.components.concept.engine.preferences.Branch
++import mozilla.components.concept.engine.preferences.BrowserPreferencesRuntime
++import mozilla.components.support.base.log.logger.Logger
++import org.mozilla.fenix.HomeActivity
++import org.mozilla.fenix.R
++import org.mozilla.fenix.compose.Favicon
++import org.mozilla.fenix.ext.requireComponents
++import org.mozilla.fenix.theme.FirefoxTheme
++import org.mozilla.fenix.tools.ObscurantTor
++import org.mozilla.fenix.voice.ObscurantVoice
++
++private const val ENABLED = "privacy.trackingprotection.content.protection.enabled"
 +private const val ENGINES = "privacy.trackingprotection.content.protection.engines"
 +private const val ENGINES_PRIVATE = "privacy.trackingprotection.content.protection.engines.pbmode"
-+private const val ADS_ENGINE = "test_block"
 +private const val PHISHING_ENGINE = "test_phish"
-+private const val ADS_KEY = "obscurant_shield_ads"
-+private const val PHISHING_KEY = "obscurant_shield_phishing"
-+private const val FINGERPRINT_KEY = "obscurant_shield_fingerprint"
-+private const val GPC_KEY = "obscurant_shield_gpc"
++private const val ALL_ENGINES = "test_block,test_phish"
++private const val NO_PHISHING = "test_block"
++private const val COSMETIC = "obscurant.cosmetic.enabled"
++private const val FINGERPRINT = "privacy.fingerprintingProtection"
++private const val GPC = "privacy.globalprivacycontrol.enabled"
++private const val SPONSOR = "obscurant.sponsorblock.enabled"
++private const val MAX_HOSTS = 8
 +
++/** One switch row: the engine setting it controls and what it counts as before it has been read. */
++private data class Setting(val pref: String, val label: String, val fallback: Boolean = false)
++
++private val AI_ROWS = listOf(
++    Setting("obscurant.ai.hide", "Hide AI answers and chat buttons"),
++    Setting("obscurant.ai.skip", "Skip Shorts and TikToks labeled AI"),
++    Setting("obscurant.ai.images", "Blur images labeled AI"),
++    Setting("obscurant.ai.block_sites", "Block AI generator sites"),
++)
++
++private val SPONSOR_ROWS = listOf(
++    Setting("obscurant.sponsorblock.cat.sponsor", "Skip sponsors", true),
++    Setting("obscurant.sponsorblock.cat.selfpromo", "Skip self-promotion", true),
++    Setting("obscurant.sponsorblock.cat.interaction", "Skip \"like and subscribe\" reminders", true),
++    Setting("obscurant.sponsorblock.cat.intro", "Skip intros"),
++    Setting("obscurant.sponsorblock.cat.outro", "Skip outros and end cards"),
++    Setting("obscurant.sponsorblock.cat.preview", "Skip recaps and previews"),
++    Setting("obscurant.sponsorblock.cat.music_offtopic", "Skip non-music sections"),
++)
++
++private val BOOL_PREFS = listOf(ENABLED, COSMETIC, FINGERPRINT, GPC, SPONSOR) +
++    AI_ROWS.map { it.pref } + SPONSOR_ROWS.map { it.pref }
++
++/** The Obscurant Shields panel, laid out like the desktop one. */
 +@OptIn(ExperimentalAndroidComponentsApi::class)
-+private fun setEnginePref(context: Context, name: String, text: String? = null, flag: Boolean? = null) {
-+    val runtime = context.components.core.engine as? BrowserPreferencesRuntime ?: return
-+    val failed: (Throwable) -> Unit = { Logger("ObscurantShields").error("could not set $name", it) }
-+    if (text != null) {
-+        runtime.setBrowserPref(name, text, Branch.USER, {}, failed)
-+    } else if (flag != null) {
-+        runtime.setBrowserPref(name, flag, Branch.USER, {}, failed)
++class ObscurantShieldSheet : BottomSheetDialogFragment() {
++    private val bools = mutableStateMapOf<String, Boolean>()
++    private var phishing by mutableStateOf(true)
++    private var siteAllowed by mutableStateOf(false)
++    private var httpsOnly by mutableStateOf(false)
++    private var cookies by mutableStateOf(ObscurantCookies.PER_SITE)
++    private val logger = Logger("ObscurantShields")
++
++    private val tabId: String
++        get() = requireArguments().getString(TAB_ID).orEmpty()
++
++    private val runtime: BrowserPreferencesRuntime?
++        get() = requireComponents.core.engine as? BrowserPreferencesRuntime
++
++    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
++        val tab = requireComponents.core.store.state.findTab(tabId)
++        return ComposeView(requireContext()).apply {
++            setContent {
++                FirefoxTheme {
++                    if (tab != null) {
++                        Panel(tab)
++                    }
++                }
++            }
++        }
++    }
++
++    override fun onStart() {
++        super.onStart()
++        (dialog as? BottomSheetDialog)?.behavior?.apply {
++            skipCollapsed = true
++            state = BottomSheetBehavior.STATE_EXPANDED
++        }
++        httpsOnly = requireComponents.settings.shouldUseHttpsOnly
++        cookies = ObscurantCookies.current(requireContext())
++        requireComponents.useCases.trackingProtectionUseCases.containsException(tabId) { siteAllowed = it }
++        runtime?.getBrowserPrefs(
++            BOOL_PREFS + ENGINES,
++            { prefs ->
++                prefs.forEach { pref ->
++                    val value = pref.value
++                    if (value is Boolean) {
++                        bools[pref.pref] = value
++                    } else if (pref.pref == ENGINES && value is String) {
++                        phishing = value.contains(PHISHING_ENGINE)
++                    }
++                }
++            },
++            { logger.error("could not read the shield settings", it) },
++        )
++    }
++
++    private fun isOn(row: Setting) = bools[row.pref] ?: row.fallback
++
++    private fun set(pref: String, on: Boolean) {
++        bools[pref] = on
++        runtime?.setBrowserPref(pref, on, Branch.USER, {}, { logger.error("could not set $pref", it) })
++    }
++
++    private fun changePhishing(on: Boolean) {
++        phishing = on
++        val engines = if (on) ALL_ENGINES else NO_PHISHING
++        listOf(ENGINES, ENGINES_PRIVATE).forEach { pref ->
++            runtime?.setBrowserPref(pref, engines, Branch.USER, {}, { logger.error("could not set $pref", it) })
++        }
++    }
++
++    private fun changeHttpsOnly(on: Boolean) {
++        httpsOnly = on
++        val settings = requireComponents.settings
++        settings.shouldUseHttpsOnly = on
++        requireComponents.core.engine.settings.httpsOnlyMode = settings.getHttpsOnlyMode()
++    }
++
++    private fun changeCookies(value: Int) {
++        cookies = value
++        ObscurantCookies.set(requireContext(), value)
++    }
++
++    private fun setSite(up: Boolean) {
++        val useCases = requireComponents.useCases.trackingProtectionUseCases
++        if (up) {
++            if (bools[ENABLED] == false) {
++                set(ENABLED, true)
++            }
++            useCases.removeException(tabId)
++        } else {
++            useCases.addException(tabId)
++        }
++        requireComponents.useCases.sessionUseCases.reload(tabId)
++        dismiss()
++    }
++
++    @Composable
++    private fun Panel(tab: TabSessionState) {
++        val globalOn = bools[ENABLED] ?: true
++        val up = globalOn && !siteAllowed
++        val hosts = tab.trackingProtection.blockedTrackers
++            .groupingBy { it.url.toUri().host ?: it.url }
++            .eachCount()
++        val total = if (up) hosts.values.sum() else 0
++
++        Column(
++            modifier = Modifier
++                .fillMaxWidth()
++                .background(MaterialTheme.colorScheme.surface)
++                .verticalScroll(rememberScrollState())
++                .padding(horizontal = 20.dp, vertical = 16.dp),
++        ) {
++            Row(verticalAlignment = Alignment.CenterVertically) {
++                Favicon(url = tab.content.url, size = 28.dp, modifier = Modifier.padding(end = 12.dp))
++                Column(modifier = Modifier.weight(1f)) {
++                    Text(
++                        text = tab.content.url.toUri().host.orEmpty(),
++                        style = MaterialTheme.typography.titleMedium,
++                        color = MaterialTheme.colorScheme.onSurface,
++                    )
++                    Text(
++                        text = if (up) "Shields are UP for this site" else "Shields are DOWN for this site",
++                        color = MaterialTheme.colorScheme.onSurfaceVariant,
++                    )
++                }
++                Switch(
++                    checked = up,
++                    onCheckedChange = ::setSite,
++                    modifier = Modifier.semantics { contentDescription = "Shields for this site" },
++                )
++            }
++            Text(
++                text = total.toString(),
++                fontSize = 44.sp,
++                fontWeight = FontWeight.Bold,
++                color = MaterialTheme.colorScheme.primary,
++                textAlign = TextAlign.Center,
++                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
++            )
++            Centered("blocked on this page")
++            Centered(
++                if (tab.content.securityInfo.isSecure) {
++                    "Secure connection (HTTPS)"
++                } else {
++                    "Not secure: this page does not use HTTPS"
++                },
++            )
++            Centered(
++                when {
++                    !globalOn -> "Shields are off everywhere. Turn them on for this site to enable them."
++                    !up -> "Shields are off for this site."
++                    total == 0 -> "Nothing blocked here so far."
++                    else -> "Ads and trackers blocked before they load."
++                },
++            )
++            if (up) {
++                hosts.entries.sortedByDescending { it.value }.take(MAX_HOSTS).forEach { (host, count) ->
++                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
++                        Text(host, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
++                        Text(count.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
++                    }
++                }
++            }
++            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
++
++            var tor by remember { mutableStateOf(ObscurantTor.isOn(requireContext())) }
++            SwitchRow("Hide my IP with Tor", tor) {
++                tor = it
++                if (it) ObscurantTor.start(requireContext()) else ObscurantTor.stop(requireContext())
++            }
++            if (tor) {
++                Centered(ObscurantTor.status)
++            }
++
++            Group(
++                "Ads and trackers",
++                listOf(globalOn),
++                {
++                    set(ENABLED, it)
++                    if (it) {
++                        changePhishing(phishing)
++                    }
++                },
++            ) {
++                SwitchRow("Hide ad boxes on pages", bools[COSMETIC] ?: true) { set(COSMETIC, it) }
++                SwitchRow("Warn about phishing sites", phishing, ::changePhishing)
++            }
++            Group(
++                "Privacy protections",
++                listOf(bools[FINGERPRINT] ?: true, httpsOnly),
++                {
++                    set(FINGERPRINT, it)
++                    changeHttpsOnly(it)
++                },
++            ) {
++                SwitchRow("Randomize fingerprints", bools[FINGERPRINT] ?: true) { set(FINGERPRINT, it) }
++                SwitchRow("HTTPS-only mode", httpsOnly, ::changeHttpsOnly)
++                SwitchRow("Ask sites not to sell my data", bools[GPC] ?: true) { set(GPC, it) }
++                CookieRow(cookies, ::changeCookies)
++            }
++            Group(
++                "AI filters",
++                AI_ROWS.map(::isOn),
++                { on -> AI_ROWS.forEach { set(it.pref, on) } },
++                "Only catches content the site or platform labels as AI. Reload a page after changing.",
++            ) {
++                AI_ROWS.forEach { row -> SwitchRow(row.label, isOn(row)) { set(row.pref, it) } }
++            }
++            VoiceGroup(requireActivity() as HomeActivity) { dismiss() }
++            Group(
++                "SponsorBlock",
++                listOf(bools[SPONSOR] ?: false),
++                { set(SPONSOR, it) },
++                "Sends a short hash of each YouTube video's id to sponsor.ajay.app. Off in private tabs. " +
++                    "Segment data by the SponsorBlock community (CC BY-NC-SA 4.0).",
++            ) {
++                SPONSOR_ROWS.forEach { row -> SwitchRow(row.label, isOn(row)) { set(row.pref, it) } }
++            }
++            TextButton(
++                onClick = {
++                    findNavController().navigate(R.id.action_global_trackingProtectionFragment)
++                },
++            ) { Text("Shield settings") }
++        }
++    }
++
++    companion object {
++        const val TAB_ID = "tabId"
 +    }
 +}
 +
-+private fun applyBlocker(context: Context, ads: Boolean, phishing: Boolean) {
-+    val engines = listOfNotNull(ADS_ENGINE.takeIf { ads }, PHISHING_ENGINE.takeIf { phishing }).joinToString(",")
-+    setEnginePref(context, ENGINES, text = engines)
-+    setEnginePref(context, ENGINES_PRIVATE, text = engines)
++@Composable
++private fun Centered(text: String) {
++    Text(
++        text = text,
++        color = MaterialTheme.colorScheme.onSurfaceVariant,
++        textAlign = TextAlign.Center,
++        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
++    )
 +}
 +
-+/** The Obscurant shield switches shown in the site panel. These apply to every site. */
 +@Composable
-+internal fun ObscurantShieldsGroup() {
-+    val context = LocalContext.current
-+    val prefs = remember { PreferenceManager.getDefaultSharedPreferences(context.applicationContext) }
-+    var ads by remember { mutableStateOf(prefs.getBoolean(ADS_KEY, true)) }
-+    var phishing by remember { mutableStateOf(prefs.getBoolean(PHISHING_KEY, true)) }
-+    var fingerprint by remember { mutableStateOf(prefs.getBoolean(FINGERPRINT_KEY, true)) }
-+    var privacySignal by remember { mutableStateOf(prefs.getBoolean(GPC_KEY, true)) }
++private fun VoiceGroup(activity: HomeActivity, close: () -> Unit) {
++    var enabled by remember { mutableStateOf(ObscurantVoice.isEnabled(activity)) }
++    var wake by remember { mutableStateOf(ObscurantVoice.flag(activity, ObscurantVoice.WAKE_ALWAYS, true)) }
++    var confirm by remember { mutableStateOf(ObscurantVoice.flag(activity, ObscurantVoice.CONFIRM_SITES, true)) }
++    var sound by remember { mutableStateOf(ObscurantVoice.flag(activity, ObscurantVoice.DURING_SOUND, false)) }
++    Group(
++        "Voice (Obscurity)",
++        listOf(enabled),
++        {
++            enabled = it
++            close()
++            ObscurantVoice.setEnabled(activity, it)
++        },
++        "Say \"hey obscurity\", then a command like \"new tab\" or \"search for cats\". Runs only on this " +
++            "phone, only while the browser is on screen. Nothing it hears is saved or sent.",
++    ) {
++        TextButton(
++            onClick = {
++                close()
++                ObscurantVoice.showCommands(activity)
++            },
++        ) { Text("See all commands") }
++        SwitchRow("Always listen for the wake phrase", wake) {
++            wake = it
++            ObscurantVoice.setFlag(activity, ObscurantVoice.WAKE_ALWAYS, it)
++        }
++        SwitchRow("Ask before opening new sites", confirm) {
++            confirm = it
++            ObscurantVoice.setFlag(activity, ObscurantVoice.CONFIRM_SITES, it)
++        }
++        SwitchRow("Listen while videos or music play", sound) {
++            sound = it
++            ObscurantVoice.setFlag(activity, ObscurantVoice.DURING_SOUND, it)
++        }
++    }
++}
 +
-+    MenuGroup {
-+        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-+            Text(
-+                text = "Obscurant Shields (all sites)",
-+                style = MaterialTheme.typography.titleSmall,
-+                color = MaterialTheme.colorScheme.primary,
-+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
++@Composable
++private fun CookieRow(selected: Int, onChange: (Int) -> Unit) {
++    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
++        Text("Cookies", color = MaterialTheme.colorScheme.onSurface)
++        ObscurantCookies.choices.forEach { (value, label) ->
++            Row(
++                verticalAlignment = Alignment.CenterVertically,
++                modifier = Modifier
++                    .fillMaxWidth()
++                    .selectable(selected = value == selected, role = Role.RadioButton) { onChange(value) },
++            ) {
++                RadioButton(selected = value == selected, onClick = null)
++                Text(
++                    text = label,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant,
++                    modifier = Modifier.padding(start = 8.dp, top = 6.dp, bottom = 6.dp),
++                )
++            }
++        }
++    }
++}
++
++/** One area of settings: a master switch, with the details shown when the title is tapped. */
++@Composable
++private fun Group(
++    title: String,
++    states: List<Boolean>,
++    onMaster: (Boolean) -> Unit,
++    note: String? = null,
++    rows: @Composable () -> Unit,
++) {
++    var open by rememberSaveable(title) { mutableStateOf(false) }
++    val all = remember(states) { states.all { it } }
++    Column(
++        modifier = Modifier
++            .fillMaxWidth()
++            .padding(vertical = 4.dp)
++            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp))
++            .padding(horizontal = 14.dp, vertical = 6.dp),
++    ) {
++        Row(verticalAlignment = Alignment.CenterVertically) {
++            Column(modifier = Modifier.weight(1f).clickable { open = !open }.padding(vertical = 8.dp)) {
++                Text(
++                    text = (if (open) "\u2304  " else "\u203a  ") + title,
++                    fontWeight = FontWeight.Medium,
++                    color = MaterialTheme.colorScheme.onSurface,
++                )
++                if (!all && states.any { it }) {
++                    Text("Partly on", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
++                }
++            }
++            Switch(
++                checked = all,
++                onCheckedChange = onMaster,
++                modifier = Modifier.semantics { contentDescription = "$title switch" },
 +            )
-+            ShieldSwitch("Block ads and trackers", ads) {
-+                ads = it
-+                prefs.edit().putBoolean(ADS_KEY, it).apply()
-+                applyBlocker(context, it, phishing)
-+            }
-+            ShieldSwitch("Block phishing sites", phishing) {
-+                phishing = it
-+                prefs.edit().putBoolean(PHISHING_KEY, it).apply()
-+                applyBlocker(context, ads, it)
-+            }
-+            ShieldSwitch("Resist fingerprinting", fingerprint) {
-+                fingerprint = it
-+                prefs.edit().putBoolean(FINGERPRINT_KEY, it).apply()
-+                setEnginePref(context, "privacy.fingerprintingProtection", flag = it)
-+            }
-+            ShieldSwitch("Ask sites not to sell my data", privacySignal) {
-+                privacySignal = it
-+                prefs.edit().putBoolean(GPC_KEY, it).apply()
-+                setEnginePref(context, "privacy.globalprivacycontrol.enabled", flag = it)
++        }
++        if (open) {
++            rows()
++            if (note != null) {
++                Text(
++                    text = note,
++                    fontSize = 12.sp,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant,
++                    modifier = Modifier.padding(vertical = 6.dp),
++                )
 +            }
 +        }
 +    }
 +}
 +
 +@Composable
-+private fun ShieldSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
++private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
 +    Row(
 +        modifier = Modifier
 +            .fillMaxWidth()
 +            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
-+            .padding(horizontal = 16.dp, vertical = 6.dp),
++            .padding(vertical = 4.dp),
 +        horizontalArrangement = Arrangement.SpaceBetween,
 +        verticalAlignment = Alignment.CenterVertically,
 +    ) {
@@ -4154,19 +5453,43 @@
 +        Switch(checked = checked, onCheckedChange = null)
 +    }
 +}
---- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/trustpanel/ui/ProtectionPanel.kt
-+++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/trustpanel/ui/ProtectionPanel.kt
-@@ -139,6 +139,10 @@
-             onTrackingProtectionToggleClick = onTrackingProtectionToggleClick,
-         )
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tabstray/ui/banner/TabsTrayBanner.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tabstray/ui/banner/TabsTrayBanner.kt
+@@ -239,7 +239,7 @@
+     privateTabCount: Int,
+     shouldShowTabGroupsPage: Boolean,
+     tabGroupCount: Int,
+-    syncedTabCount: Int,
++    @Suppress("UNUSED_PARAMETER") syncedTabCount: Int,
+     hasTabDataLoaded: Boolean,
+     onTabPageIndicatorClicked: (Page) -> Unit,
+ ) {
+@@ -311,10 +311,6 @@
+         count = tabGroupCount,
+         tabGroupCount,
+     )
+-    val syncedTabDescription = stringResource(
+-        id = R.string.tabs_header_synced_tabs_counter_title,
+-        syncedTabCount.toString(),
+-    )
  
-+        if (!isLocalPdf) {
-+            ObscurantShieldsGroup()
-+        }
-+
-         IPProtectionMenuGroup(
-             visible = showIPProtection,
-             ipProtectionMenuState = ipProtectionMenuState,
+     BannerTab(
+         selected = selectedPage == Page.PrivateTabs,
+@@ -348,14 +344,6 @@
+         }
+     }
+ 
+-    BannerTab(
+-        selected = selectedPage == Page.SyncedTabs,
+-        testTag = TabsTrayTestTag.SYNCED_TABS_PAGE_BUTTON,
+-        contentDescription = syncedTabDescription,
+-        onClick = { onTabPageIndicatorClicked(Page.SyncedTabs) },
+-    ) {
+-        Icon(painterResource(iconsR.drawable.mozac_ic_sync_tabs_24), null)
+-    }
+ }
+ 
+ @Composable
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/termsofuse/store/PrivacyNoticeBannerRepository.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/termsofuse/store/PrivacyNoticeBannerRepository.kt
 @@ -32,14 +32,6 @@
@@ -4429,6 +5752,1093 @@
      }
  
      companion object {
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantCleanLink.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantCleanLink.kt
+@@ -0,0 +1,24 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.tools
++
++import android.net.Uri
++
++private val TRACKING = Regex(
++    "^(utm_[a-z]+|fbclid|gclid|gbraid|wbraid|dclid|msclkid|mc_eid|mc_cid|igshid|igsh|yclid|_hsenc|_hsmi|" +
++        "ref_src|ref_url|spm|si|feature|s_cid|cmpid|vero_id|oly_enc_id|oly_anon_id|ttclid|twclid|epik|li_fat_id)$",
++    RegexOption.IGNORE_CASE,
++)
++
++/** [url] without the query parameters that only exist to track who shared or clicked it. */
++internal fun obscurantCleanLink(url: String): String {
++    val uri = Uri.parse(url)
++    if (uri.scheme != "http" && uri.scheme != "https") {
++        return url
++    }
++    val query = uri.encodedQuery ?: return url
++    val kept = query.split('&').filterNot { TRACKING.matches(Uri.decode(it.substringBefore('='))) }
++    return uri.buildUpon().encodedQuery(kept.joinToString("&").ifEmpty { null }).build().toString()
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantMemory.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantMemory.kt
+@@ -0,0 +1,115 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.tools
++
++import android.app.ActivityManager
++import android.content.Context
++import android.os.Process
++import androidx.lifecycle.Lifecycle
++import androidx.lifecycle.LifecycleOwner
++import androidx.lifecycle.lifecycleScope
++import androidx.lifecycle.repeatOnLifecycle
++import androidx.preference.PreferenceManager
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.launch
++import mozilla.components.browser.state.action.EngineAction
++import mozilla.components.browser.state.state.TabSessionState
++import org.mozilla.fenix.ext.components
++
++/** Frees memory by unloading background tabs, as the desktop browser does when the computer runs low. */
++object ObscurantMemory {
++    const val AUTO_PREF = "obscurant_unload_low_memory"
++    private const val CHECK_MS = 10_000L
++    private const val MIN_INACTIVE_MS = 30_000L
++    private const val LOW_PERCENT = 15
++    private const val BYTES_PER_MB = 1_048_576L
++    private const val KB_PER_MB = 1024
++
++    /** Tabs the user asked to keep loaded, until the app is closed. */
++    internal val kept = mutableSetOf<String>()
++
++    internal fun isLoaded(tab: TabSessionState) = tab.engineState.engineSession != null
++
++    private fun canUnload(context: Context, tab: TabSessionState) =
++        isLoaded(tab) &&
++            tab.id != context.components.core.store.state.selectedTabId &&
++            tab.id !in kept &&
++            tab.mediaSessionState == null
++
++    internal fun unload(context: Context, tabId: String) {
++        context.components.core.store.dispatch(EngineAction.SuspendEngineSessionAction(tabId))
++    }
++
++    /** Unloads every tab that is neither on screen, kept, nor playing media. Returns how many. */
++    internal fun unloadBackground(context: Context): Int {
++        val tabs = context.components.core.store.state.tabs.filter { canUnload(context, it) }
++        tabs.forEach { unload(context, it.id) }
++        return tabs.size
++    }
++
++    private fun systemMemory(context: Context): ActivityManager.MemoryInfo {
++        val info = ActivityManager.MemoryInfo()
++        context.getSystemService(ActivityManager::class.java).getMemoryInfo(info)
++        return info
++    }
++
++    internal fun freeMegabytes(context: Context) = systemMemory(context).availMem / BYTES_PER_MB
++
++    /** Name and size in MB of each of the app's processes that Android lets the app see. */
++    internal fun processes(context: Context): List<Pair<String, Int>> {
++        val manager = context.getSystemService(ActivityManager::class.java)
++        val running = manager.runningAppProcesses.orEmpty()
++        if (running.isEmpty()) {
++            return emptyList()
++        }
++        val sizes = manager.getProcessMemoryInfo(running.map { it.pid }.toIntArray())
++        return running.mapIndexed { index, process ->
++            val name = if (process.pid == Process.myPid()) {
++                "Browser (main)"
++            } else {
++                friendlyName(process.processName.substringAfter(':', process.processName))
++            }
++            name to sizes[index].totalPss / KB_PER_MB
++        }.sortedByDescending { it.second }
++    }
++
++    private fun friendlyName(process: String) = when {
++        process.startsWith("tab") || process.startsWith("isolatedTab") -> "Web page"
++        process.startsWith("gpu") -> "Graphics"
++        process.startsWith("socket") -> "Network"
++        process.startsWith("media") -> "Media decoder"
++        process.startsWith("rdd") -> "Media decoder"
++        process.startsWith("utility") -> "Audio and utilities"
++        else -> process
++    }
++
++    /** While the app is on screen, unloads the tab used longest ago whenever memory is low. */
++    fun watch(owner: LifecycleOwner, context: Context) {
++        owner.lifecycleScope.launch {
++            owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
++                while (true) {
++                    delay(CHECK_MS)
++                    unloadOneIfLow(context.applicationContext)
++                }
++            }
++        }
++    }
++
++    private fun unloadOneIfLow(context: Context) {
++        if (!PreferenceManager.getDefaultSharedPreferences(context).getBoolean(AUTO_PREF, true)) {
++            return
++        }
++        val saving = ObscurantPresets.savesMemory(context)
++        val info = systemMemory(context)
++        if (!saving && !info.lowMemory && info.availMem * 100 / info.totalMem >= LOW_PERCENT) {
++            return
++        }
++        val now = System.currentTimeMillis()
++        context.components.core.store.state.tabs
++            .filter { canUnload(context, it) && now - it.lastAccess > MIN_INACTIVE_MS }
++            .minByOrNull { it.lastAccess }
++            ?.let { unload(context, it.id) }
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantPasswordLock.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantPasswordLock.kt
+@@ -0,0 +1,137 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.tools
++
++import android.app.Activity
++import android.content.Context
++import android.text.InputType
++import android.util.Base64
++import android.widget.EditText
++import android.widget.LinearLayout
++import android.widget.Toast
++import androidx.appcompat.app.AlertDialog
++import androidx.preference.PreferenceManager
++import java.security.MessageDigest
++import java.security.SecureRandom
++import javax.crypto.SecretKeyFactory
++import javax.crypto.spec.PBEKeySpec
++
++private const val HASH_PREF = "obscurant_password_lock_hash"
++private const val SALT_PREF = "obscurant_password_lock_salt"
++private const val ROUNDS = 210_000
++private const val KEY_BITS = 256
++private const val SALT_BYTES = 16
++private const val MIN_LENGTH = 12
++private const val MIN_DISTINCT = 6
++private const val PADDING_DP = 24
++
++/**
++ * The desktop primary password rules, used as an extra password in front of the passwords screen. It is a
++ * lock on the screen only: saved passwords stay encrypted by Android as before, and autofill still works.
++ */
++object ObscurantPasswordLock {
++    private val common = listOf(
++        "password", "passw0rd", "123456789", "1234567890", "qwertyuiop", "letmein", "iloveyou",
++        "administrator", "obscurant", "welcome1",
++    )
++
++    private fun prefs(context: Context) = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++
++    fun isSet(context: Context) = prefs(context).contains(HASH_PREF)
++
++    internal fun problem(password: String): String? = when {
++        password.length < MIN_LENGTH ->
++            "Use at least $MIN_LENGTH characters. A few random words in a row works well."
++        password.toSet().size < MIN_DISTINCT -> "That repeats too much. Mix it up."
++        common.any { it in password.lowercase() } -> "That is too easy to guess."
++        else -> null
++    }
++
++    private fun derive(password: String, salt: ByteArray): ByteArray =
++        SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
++            .generateSecret(PBEKeySpec(password.toCharArray(), salt, ROUNDS, KEY_BITS)).encoded
++
++    private fun matches(context: Context, password: String): Boolean {
++        val salt = Base64.decode(prefs(context).getString(SALT_PREF, ""), Base64.NO_WRAP)
++        val hash = Base64.decode(prefs(context).getString(HASH_PREF, ""), Base64.NO_WRAP)
++        return MessageDigest.isEqual(derive(password, salt), hash)
++    }
++
++    private fun store(context: Context, password: String) {
++        val salt = ByteArray(SALT_BYTES).also { SecureRandom().nextBytes(it) }
++        prefs(context).edit()
++            .putString(SALT_PREF, Base64.encodeToString(salt, Base64.NO_WRAP))
++            .putString(HASH_PREF, Base64.encodeToString(derive(password, salt), Base64.NO_WRAP))
++            .apply()
++    }
++
++    private fun ask(activity: Activity, title: String, message: String, action: String, done: (String) -> Unit) {
++        val input = EditText(activity).apply {
++            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
++            hint = "Password"
++        }
++        val padding = (PADDING_DP * activity.resources.displayMetrics.density).toInt()
++        val box = LinearLayout(activity).apply {
++            setPadding(padding, 0, padding, 0)
++            addView(input, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
++        }
++        AlertDialog.Builder(activity)
++            .setTitle(title)
++            .setMessage(message)
++            .setView(box)
++            .setPositiveButton(action) { _, _ -> done(input.text.toString()) }
++            .setNegativeButton(android.R.string.cancel, null)
++            .show()
++    }
++
++    private fun say(context: Context, text: String) {
++        Toast.makeText(context.applicationContext, text, Toast.LENGTH_LONG).show()
++    }
++
++    /** Runs [open] right away when no lock is set, otherwise only after the right password. */
++    fun require(activity: Activity, open: () -> Unit) {
++        if (!isSet(activity)) {
++            open()
++            return
++        }
++        ask(activity, "Passwords are locked", "Enter your primary password.", "Unlock") {
++            if (matches(activity, it)) open() else say(activity, "That password is wrong")
++        }
++    }
++
++    fun showSettings(activity: Activity) {
++        if (isSet(activity)) {
++            ask(
++                activity,
++                "Remove the passwords lock?",
++                "Enter your primary password to remove it.",
++                "Remove",
++            ) {
++                if (matches(activity, it)) {
++                    prefs(activity).edit().remove(HASH_PREF).remove(SALT_PREF).apply()
++                    say(activity, "Passwords lock removed")
++                } else {
++                    say(activity, "That password is wrong")
++                }
++            }
++        } else {
++            ask(
++                activity,
++                "Set a primary password",
++                "Asked before the passwords screen opens. It locks the screen only: it does not add " +
++                    "encryption, and autofill still works. There is no way to recover it.",
++                "Set",
++            ) {
++                val wrong = problem(it)
++                if (wrong != null) {
++                    say(activity, wrong)
++                } else {
++                    store(activity, it)
++                    say(activity, "Primary password set")
++                }
++            }
++        }
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantPresets.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantPresets.kt
+@@ -0,0 +1,112 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.tools
++
++import android.app.Activity
++import android.content.Context
++import android.widget.Toast
++import androidx.appcompat.app.AlertDialog
++import androidx.preference.PreferenceManager
++import mozilla.components.ExperimentalAndroidComponentsApi
++import mozilla.components.concept.engine.preferences.Branch
++import mozilla.components.concept.engine.preferences.BrowserPreferencesRuntime
++import mozilla.components.support.base.log.logger.Logger
++import org.mozilla.fenix.ext.components
++
++private const val PRESET_PREF = "obscurant_preset"
++private const val STRICT_REFERRER = 2
++
++private class Preset(
++    val id: String,
++    val label: String,
++    val description: String,
++    val flags: Map<String, Boolean> = emptyMap(),
++    val numbers: Map<String, Int> = emptyMap(),
++)
++
++private val PRESETS = listOf(
++    Preset("default", "Default", "What ships with the browser."),
++    Preset(
++        "privacy",
++        "Max privacy",
++        "Fingerprint resistance, HTTPS-only and strict referrers. Some sites may break or look different.",
++        flags = mapOf("privacy.resistFingerprinting" to true),
++        numbers = mapOf("network.http.referer.XOriginPolicy" to STRICT_REFERRER),
++    ),
++    Preset(
++        "speed",
++        "Max speed",
++        "No smooth scrolling. A small gain, nothing weakened.",
++        flags = mapOf("general.smoothScroll" to false),
++    ),
++    Preset(
++        "performance",
++        "Max responsiveness",
++        "Bigger caches. Faster back and forward, uses more memory.",
++        numbers = mapOf(
++            "browser.cache.memory.capacity" to 262144,
++            "image.mem.surfacecache.max_size_kb" to 1048576,
++            "image.mem.surfacecache.min_expiration_ms" to 60000,
++            "media.memory_caches_combined_limit_kb" to 524288,
++            "browser.sessionhistory.max_total_viewers" to 8,
++            "network.dnsCacheEntries" to 800,
++        ),
++    ),
++    Preset(
++        "ram",
++        "Max RAM savings",
++        "Unloads background tabs after 30 seconds and keeps smaller caches. Tabs reload more often.",
++        numbers = mapOf(
++            "browser.sessionhistory.max_total_viewers" to 0,
++            "browser.cache.memory.capacity" to 8192,
++            "image.mem.surfacecache.max_size_kb" to 131072,
++        ),
++    ),
++)
++
++/** The desktop browser's presets: bundles of settings that can all be undone by choosing Default. */
++@OptIn(ExperimentalAndroidComponentsApi::class)
++object ObscurantPresets {
++    private val logger = Logger("ObscurantPresets")
++
++    private fun current(context: Context): String =
++        PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++            .getString(PRESET_PREF, "default") ?: "default"
++
++    internal fun savesMemory(context: Context) = current(context) == "ram"
++
++    private fun apply(context: Context, preset: Preset) {
++        val engine = context.components.core.engine as? BrowserPreferencesRuntime ?: return
++        val failed: (Throwable) -> Unit = { logger.error("could not apply ${preset.id}", it) }
++        val touched = PRESETS.flatMap { it.flags.keys + it.numbers.keys }.toSet()
++        (touched - preset.flags.keys - preset.numbers.keys).forEach {
++            engine.clearBrowserUserPref(it, {}, failed)
++        }
++        preset.flags.forEach { (name, value) -> engine.setBrowserPref(name, value, Branch.USER, {}, failed) }
++        preset.numbers.forEach { (name, value) -> engine.setBrowserPref(name, value, Branch.USER, {}, failed) }
++
++        val settings = context.components.settings
++        if (preset.id == "privacy" || current(context) == "privacy") {
++            settings.shouldUseHttpsOnly = preset.id == "privacy"
++            context.components.core.engine.settings.httpsOnlyMode = settings.getHttpsOnlyMode()
++        }
++        PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++            .edit().putString(PRESET_PREF, preset.id).apply()
++    }
++
++    fun showChooser(activity: Activity) {
++        val selected = PRESETS.indexOfFirst { it.id == current(activity) }.coerceAtLeast(0)
++        val labels = PRESETS.map { "${it.label}\n${it.description}" }.toTypedArray()
++        AlertDialog.Builder(activity)
++            .setTitle("Presets")
++            .setSingleChoiceItems(labels, selected) { dialog, which ->
++                apply(activity, PRESETS[which])
++                Toast.makeText(activity, "${PRESETS[which].label} applied", Toast.LENGTH_SHORT).show()
++                dialog.dismiss()
++            }
++            .setNegativeButton(android.R.string.cancel, null)
++            .show()
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantSplash.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantSplash.kt
+@@ -0,0 +1,64 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.tools
++
++import android.app.Activity
++import android.graphics.Typeface
++import android.view.Gravity
++import android.view.ViewGroup
++import android.widget.ImageView
++import android.widget.LinearLayout
++import android.widget.TextView
++import androidx.preference.PreferenceManager
++import com.google.android.material.R as materialR
++import mozilla.components.support.ktx.android.content.getColorFromAttr
++import org.mozilla.fenix.R
++
++private const val IN_MS = 450L
++private const val HOLD_MS = 650L
++private const val OUT_MS = 300L
++private const val LOGO_DP = 180
++private const val NAME_SP = 30f
++private const val START_SCALE = 0.7f
++private const val SPACING = 0.2f
++
++/** The opening animation shown over the browser on a fresh start. It can be switched off in the command box. */
++internal fun playObscurantSplash(activity: Activity) {
++    val prefs = PreferenceManager.getDefaultSharedPreferences(activity.applicationContext)
++    if (!prefs.getBoolean(SPLASH_PREF, true)) {
++        return
++    }
++    val root = activity.window.decorView as ViewGroup
++    val density = activity.resources.displayMetrics.density
++    val logo = ImageView(activity).apply {
++        setImageResource(R.drawable.obscurant_launcher_fg)
++        val side = (LOGO_DP * density).toInt()
++        layoutParams = LinearLayout.LayoutParams(side, side)
++        scaleX = START_SCALE
++        scaleY = START_SCALE
++    }
++    val name = TextView(activity).apply {
++        text = "obscurant"
++        textSize = NAME_SP
++        letterSpacing = SPACING
++        typeface = Typeface.DEFAULT_BOLD
++        gravity = Gravity.CENTER
++        setTextColor(activity.getColorFromAttr(materialR.attr.colorOnSurface))
++    }
++    val cover = LinearLayout(activity).apply {
++        orientation = LinearLayout.VERTICAL
++        gravity = Gravity.CENTER
++        setBackgroundColor(activity.getColorFromAttr(materialR.attr.colorSurface))
++        isClickable = true
++        addView(logo)
++        addView(name)
++    }
++    root.addView(cover, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
++    name.alpha = 0f
++    logo.animate().scaleX(1f).scaleY(1f).setDuration(IN_MS).start()
++    name.animate().alpha(1f).setDuration(IN_MS).start()
++    cover.animate().alpha(0f).setStartDelay(IN_MS + HOLD_MS).setDuration(OUT_MS)
++        .withEndAction { root.removeView(cover) }.start()
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantToolsMenuItem.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantToolsMenuItem.kt
+@@ -0,0 +1,42 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.tools
++
++import android.content.Context
++import android.content.ContextWrapper
++import androidx.compose.runtime.Composable
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.res.painterResource
++import androidx.fragment.app.FragmentActivity
++import androidx.navigation.fragment.NavHostFragment
++import org.mozilla.fenix.R
++import org.mozilla.fenix.components.menu.compose.MenuGroup
++import org.mozilla.fenix.components.menu.compose.MenuItem
++import mozilla.components.ui.icons.R as iconsR
++
++private tailrec fun Context.findActivity(): FragmentActivity? = when (this) {
++    is FragmentActivity -> this
++    is ContextWrapper -> baseContext.findActivity()
++    else -> null
++}
++
++/** Main menu entry for the command box and memory tools. */
++@Composable
++internal fun ObscurantToolsMenuItem() {
++    val context = LocalContext.current
++    MenuGroup {
++        MenuItem(
++            label = "Obscurant tools",
++            beforeIconPainter = painterResource(id = iconsR.drawable.mozac_ic_tool_24),
++            onClick = {
++                val host = context.findActivity()?.supportFragmentManager?.findFragmentById(R.id.container)
++                (host as? NavHostFragment)?.navController?.let {
++                    it.popBackStack()
++                    it.navigate(R.id.obscurantToolsSheet)
++                }
++            },
++        )
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantToolsSheet.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantToolsSheet.kt
+@@ -0,0 +1,393 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.tools
++
++import android.content.ClipData
++import android.content.ClipboardManager
++import android.os.Bundle
++import android.view.LayoutInflater
++import android.view.View
++import android.view.ViewGroup
++import android.widget.Toast
++import androidx.activity.compose.BackHandler
++import androidx.compose.foundation.background
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.items
++import androidx.compose.material3.HorizontalDivider
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Switch
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableIntStateOf
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.saveable.rememberSaveable
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.ComposeView
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.text.style.TextOverflow
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import androidx.lifecycle.lifecycleScope
++import androidx.navigation.fragment.findNavController
++import androidx.preference.PreferenceManager
++import com.google.android.material.bottomsheet.BottomSheetBehavior
++import com.google.android.material.bottomsheet.BottomSheetDialog
++import com.google.android.material.bottomsheet.BottomSheetDialogFragment
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.withContext
++import mozilla.appservices.places.BookmarkRoot
++import mozilla.components.ExperimentalAndroidComponentsApi
++import mozilla.components.browser.state.selector.selectedTab
++import mozilla.components.concept.engine.preferences.Branch
++import mozilla.components.concept.engine.preferences.BrowserPreferencesRuntime
++import mozilla.components.support.base.log.logger.Logger
++import org.mozilla.fenix.HomeActivity
++import org.mozilla.fenix.NavGraphDirections
++import org.mozilla.fenix.R
++import org.mozilla.fenix.browser.browsingmode.BrowsingMode
++import org.mozilla.fenix.ext.requireComponents
++import org.mozilla.fenix.theme.FirefoxTheme
++import org.mozilla.fenix.theme.ObscurantThemes
++import org.mozilla.fenix.voice.ObscurantVoice
++
++private const val REFRESH_MS = 2000L
++private const val COLOR_SCHEME = "layout.css.prefers-color-scheme.content-override"
++private const val DARK = 0
++private const val LIGHT = 1
++private const val SYSTEM = 2
++internal const val SPLASH_PREF = "obscurant_splash"
++internal const val MEMORY_ARG = "memory"
++
++private class Command(val label: String, val run: () -> Unit)
++
++/** The desktop command box and resource use button, as one phone screen. */
++@OptIn(ExperimentalAndroidComponentsApi::class)
++class ObscurantToolsSheet : BottomSheetDialogFragment() {
++    private val logger = Logger("ObscurantTools")
++
++    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View =
++        ComposeView(requireContext()).apply {
++            setContent {
++                FirefoxTheme {
++                    var memory by rememberSaveable { mutableStateOf(arguments?.getBoolean(MEMORY_ARG) == true) }
++                    Column(
++                        modifier = Modifier
++                            .fillMaxSize()
++                            .background(MaterialTheme.colorScheme.surface)
++                            .padding(horizontal = 18.dp, vertical = 12.dp),
++                    ) {
++                        BackHandler(enabled = memory) { memory = false }
++                        if (memory) {
++                            Resources { memory = false }
++                        } else {
++                            CommandBox { memory = true }
++                        }
++                    }
++                }
++            }
++        }
++
++    override fun onStart() {
++        super.onStart()
++        (dialog as? BottomSheetDialog)?.behavior?.apply {
++            skipCollapsed = true
++            state = BottomSheetBehavior.STATE_EXPANDED
++        }
++    }
++
++    private fun say(text: String) {
++        Toast.makeText(requireContext(), text, Toast.LENGTH_SHORT).show()
++    }
++
++    private fun close(action: () -> Unit) {
++        action()
++        dismissAllowingStateLoss()
++    }
++
++    private fun go(destination: Int) {
++        findNavController().navigate(destination)
++    }
++
++    private fun newTab(private: Boolean) {
++        (requireActivity() as HomeActivity).browsingModeManager.mode =
++            if (private) BrowsingMode.Private else BrowsingMode.Normal
++        findNavController().navigate(NavGraphDirections.actionGlobalHome(focusOnAddressBar = true))
++    }
++
++    private fun flipEnginePref(name: String, label: String) {
++        val runtime = requireComponents.core.engine as? BrowserPreferencesRuntime ?: return
++        val context = requireContext().applicationContext
++        runtime.getBrowserPref(
++            name,
++            { pref ->
++                val on = pref.value != true
++                runtime.setBrowserPref(name, on, Branch.USER, {}, { logger.error("could not set $name", it) })
++                Toast.makeText(context, "$label: ${if (on) "on" else "off"}", Toast.LENGTH_SHORT).show()
++            },
++            { logger.error("could not read $name", it) },
++        )
++    }
++
++    private fun websiteColors(value: Int) {
++        val runtime = requireComponents.core.engine as? BrowserPreferencesRuntime ?: return
++        runtime.setBrowserPref(COLOR_SCHEME, value, Branch.USER, {}, { logger.error("could not set colors", it) })
++        requireComponents.useCases.sessionUseCases.reload()
++    }
++
++    private fun pageCommands(): List<Command> {
++        val components = requireComponents
++        val tab = components.core.store.state.selectedTab ?: return emptyList()
++        val tabs = components.useCases.tabsUseCases
++        val session = components.useCases.sessionUseCases
++        val context = requireContext().applicationContext
++        return listOf(
++            Command("Copy link without tracking junk") {
++                val clip = ClipData.newPlainText("link", obscurantCleanLink(tab.content.url))
++                context.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
++                say("Clean link copied")
++            },
++            Command("Duplicate tab") { tabs.duplicateTab(tab) },
++            Command("Close tab") { tabs.removeTab(tab.id) },
++            Command("Close other tabs") {
++                val others = components.core.store.state.tabs
++                    .filter { it.id != tab.id && it.content.private == tab.content.private }
++                tabs.removeTabs(others.map { it.id })
++            },
++            Command("Bookmark this page") {
++                val activity = requireActivity()
++                activity.lifecycleScope.launch(Dispatchers.IO) {
++                    components.core.bookmarksStorage
++                        .addItem(BookmarkRoot.Mobile.id, tab.content.url, tab.content.title, null)
++                }
++                say("Bookmarked")
++            },
++            Command("Desktop site: on or off") { session.requestDesktopSite(!tab.content.desktopMode, tab.id) },
++            Command("Save page as PDF") { session.saveToPdf(tab.id) },
++            Command("Print") { session.printContent(tab.id) },
++            Command("Shields: turn on or off for this site") {
++                val shields = components.useCases.trackingProtectionUseCases
++                shields.containsException(tab.id) { off ->
++                    if (off) shields.removeException(tab.id) else shields.addException(tab.id)
++                    session.reload(tab.id)
++                }
++            },
++        )
++    }
++
++    private fun commands(openMemory: () -> Unit): List<Command> {
++        val tabs = requireComponents.useCases.tabsUseCases
++        val activity = requireActivity()
++        val ai = listOf(
++            "obscurant.ai.hide" to "AI filters: hide AI answers",
++            "obscurant.ai.images" to "AI filters: blur AI images",
++            "obscurant.ai.skip" to "AI filters: skip AI videos",
++            "obscurant.ai.block_sites" to "AI filters: block AI generator sites",
++        ).map { (pref, label) -> Command("$label on or off") { close { flipEnginePref(pref, label) } } }
++        return listOf(
++            Command("New tab") { close { newTab(false) } },
++            Command("New private tab") { close { newTab(true) } },
++            Command("Reopen closed tab") { close { tabs.undo() } },
++            Command(if (ObscurantTor.isOn(activity)) "Stop hiding my IP with Tor" else "Hide my IP with Tor") {
++                ObscurantTor.toggle(activity)
++                close { say(if (ObscurantTor.isOn(activity)) "Starting Tor" else "Tor is off") }
++            },
++        ) + pageCommands().map { command -> Command(command.label) { close(command.run) } } + listOf(
++            Command("Show memory and resource use", openMemory),
++            Command("Unload all background tabs (free memory)") {
++                close { say("Unloaded ${ObscurantMemory.unloadBackground(requireContext())} tabs") }
++            },
++            Command("Show all bookmarks") { close { go(R.id.action_global_bookmarkFragment) } },
++            Command("Show history") { close { go(R.id.action_global_historyFragment) } },
++            Command("Downloads") { close { go(R.id.action_global_downloadsFragment) } },
++            Command("Passwords") {
++                val nav = findNavController()
++                ObscurantPasswordLock.require(activity) { nav.navigate(R.id.action_global_savedLoginsAuthFragment) }
++                dismissAllowingStateLoss()
++            },
++            Command("Add-ons and extensions") { close { go(R.id.action_global_addonsManagementFragment) } },
++            Command("Settings") { close { go(R.id.action_global_settingsFragment) } },
++            Command("Settings: privacy") { close { go(R.id.action_global_trackingProtectionFragment) } },
++            Command("Settings: appearance") { close { go(R.id.action_global_customizationFragment) } },
++            Command("Themes") { ObscurantThemes.showChooser(activity) },
++            Command(if (ObscurantVoice.isEnabled(activity)) "Voice (Obscurity): turn off" else "Voice (Obscurity): turn on") {
++                val home = activity as HomeActivity
++                val on = !ObscurantVoice.isEnabled(home)
++                close { ObscurantVoice.setEnabled(home, on) }
++            },
++            Command("Voice commands, or type one") {
++                val home = activity as HomeActivity
++                close { ObscurantVoice.showCommands(home) }
++            },
++            Command("Passwords lock (extra password)") { close { ObscurantPasswordLock.showSettings(activity) } },
++            Command("Settings: presets (privacy, speed, RAM)") { ObscurantPresets.showChooser(activity) },
++        ) + ai + listOf(
++            Command("Dark mode for websites") { close { websiteColors(DARK) } },
++            Command("Light mode for websites") { close { websiteColors(LIGHT) } },
++            Command("Websites follow system theme") { close { websiteColors(SYSTEM) } },
++            Command("Launch animation on or off") {
++                val prefs = PreferenceManager.getDefaultSharedPreferences(activity.applicationContext)
++                val on = !prefs.getBoolean(SPLASH_PREF, true)
++                prefs.edit().putBoolean(SPLASH_PREF, on).apply()
++                close { say("Launch animation: ${if (on) "on" else "off"}") }
++            },
++            Command("Clear cookies and site data (logs you out)") {
++                close { go(R.id.action_global_deleteBrowsingDataFragment) }
++            },
++            Command("Quit Obscurant") { activity.finishAndRemoveTask() },
++        )
++    }
++
++    @Composable
++    private fun CommandBox(openMemory: () -> Unit) {
++        var query by rememberSaveable { mutableStateOf("") }
++        val commands = remember { commands(openMemory) }
++        val words = query.lowercase().split(' ').filter { it.isNotEmpty() }
++        fun matches(text: String) = words.all { it in text.lowercase() }
++        val openTabs = requireComponents.core.store.state.tabs
++            .filter { words.isNotEmpty() && matches("${it.content.title} ${it.content.url}") }
++            .map { tab ->
++                Command("Tab: ${tab.content.title.ifEmpty { tab.content.url }}") {
++                    close {
++                        requireComponents.useCases.tabsUseCases.selectTab(tab.id)
++                        findNavController().navigate(R.id.action_global_browser)
++                    }
++                }
++            }
++        val results = openTabs + commands.filter { matches(it.label) }
++
++        OutlinedTextField(
++            value = query,
++            onValueChange = { query = it },
++            placeholder = { Text("Search commands and tabs") },
++            singleLine = true,
++            modifier = Modifier.fillMaxWidth(),
++        )
++        LazyColumn(modifier = Modifier.fillMaxSize()) {
++            items(results) { command ->
++                Text(
++                    text = command.label,
++                    color = MaterialTheme.colorScheme.onSurface,
++                    modifier = Modifier.fillMaxWidth().clickable(onClick = command.run).padding(vertical = 13.dp),
++                )
++                HorizontalDivider()
++            }
++        }
++    }
++
++    @Composable
++    private fun Resources(back: () -> Unit) {
++        val context = requireContext()
++        var tick by remember { mutableIntStateOf(0) }
++        var processes by remember { mutableStateOf(emptyList<Pair<String, Int>>()) }
++        val prefs = remember { PreferenceManager.getDefaultSharedPreferences(context.applicationContext) }
++        var auto by remember { mutableStateOf(prefs.getBoolean(ObscurantMemory.AUTO_PREF, true)) }
++        LaunchedEffect(Unit) {
++            while (true) {
++                processes = withContext(Dispatchers.Default) { ObscurantMemory.processes(context) }
++                tick++
++                delay(REFRESH_MS)
++            }
++        }
++        val state = remember(tick) { requireComponents.core.store.state }
++
++        TextButton(onClick = back) { Text("Back to commands") }
++        LazyColumn(modifier = Modifier.fillMaxSize()) {
++            item {
++                Text(
++                    text = "${processes.sumOf { it.second }} MB",
++                    fontSize = 40.sp,
++                    fontWeight = FontWeight.Bold,
++                    color = MaterialTheme.colorScheme.primary,
++                )
++                Detail("memory in use by the processes Android lets the app measure")
++                Detail("Free on this phone: ${ObscurantMemory.freeMegabytes(context)} MB")
++                Detail("Tabs open: ${state.tabs.size}")
++                Detail("Tabs unloaded: ${state.tabs.count { !ObscurantMemory.isLoaded(it) }}")
++                Row(verticalAlignment = Alignment.CenterVertically) {
++                    Text(
++                        "Unload old tabs when memory is low",
++                        color = MaterialTheme.colorScheme.onSurface,
++                        modifier = Modifier.weight(1f),
++                    )
++                    Switch(
++                        checked = auto,
++                        onCheckedChange = {
++                            auto = it
++                            prefs.edit().putBoolean(ObscurantMemory.AUTO_PREF, it).apply()
++                        },
++                    )
++                }
++                TextButton(onClick = { say("Unloaded ${ObscurantMemory.unloadBackground(context)} tabs") }) {
++                    Text("Unload all background tabs")
++                }
++                Heading("Processes")
++            }
++            items(processes) { (name, size) -> Line(name, "$size MB") }
++            item { Heading("Tabs") }
++            items(state.tabs, key = { it.id }) { tab ->
++                val loaded = ObscurantMemory.isLoaded(tab)
++                var keep by remember(tab.id) { mutableStateOf(tab.id in ObscurantMemory.kept) }
++                Row(verticalAlignment = Alignment.CenterVertically) {
++                    Text(
++                        text = tab.content.title.ifEmpty { tab.content.url },
++                        maxLines = 1,
++                        overflow = TextOverflow.Ellipsis,
++                        color = MaterialTheme.colorScheme.onSurface,
++                        modifier = Modifier.weight(1f),
++                    )
++                    if (loaded && tab.id != state.selectedTabId) {
++                        TextButton(onClick = { ObscurantMemory.unload(context, tab.id) }) { Text("Unload") }
++                    } else if (!loaded) {
++                        Detail("unloaded")
++                    }
++                    TextButton(
++                        onClick = {
++                            keep = !keep
++                            if (keep) ObscurantMemory.kept.add(tab.id) else ObscurantMemory.kept.remove(tab.id)
++                        },
++                    ) { Text(if (keep) "Kept" else "Keep") }
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun Detail(text: String) {
++    Text(text = text, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
++}
++
++@Composable
++private fun Heading(text: String) {
++    Text(
++        text = text,
++        fontWeight = FontWeight.Medium,
++        color = MaterialTheme.colorScheme.primary,
++        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
++    )
++}
++
++@Composable
++private fun Line(name: String, value: String) {
++    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
++        Text(name, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
++        Text(value, color = MaterialTheme.colorScheme.onSurfaceVariant)
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantTor.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/tools/ObscurantTor.kt
+@@ -0,0 +1,176 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.tools
++
++import android.content.ComponentName
++import android.content.Context
++import android.content.Intent
++import android.content.ServiceConnection
++import android.os.Handler
++import android.os.IBinder
++import android.os.Looper
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.setValue
++import androidx.preference.PreferenceManager
++import mozilla.components.ExperimentalAndroidComponentsApi
++import mozilla.components.concept.engine.preferences.Branch
++import mozilla.components.concept.engine.preferences.BrowserPreferencesRuntime
++import mozilla.components.support.base.log.logger.Logger
++import org.mozilla.fenix.ext.components
++import org.torproject.jni.TorService
++import java.io.IOException
++import java.net.InetAddress
++import java.net.ServerSocket
++
++private const val PORT = 9150
++private const val ON_PREF = "obscurant_tor_on"
++private const val POLL_MS = 700L
++private const val TIMEOUT_MS = 120_000L
++private const val DONE = 100
++private const val SOCKS_VERSION = 5
++private const val MANUAL_PROXY = 1
++
++/**
++ * One tap Tor, as on desktop. The browser is pointed at Tor before Tor is started, with no direct
++ * fallback, so pages fail instead of using the real address while Tor is not connected.
++ */
++@OptIn(ExperimentalAndroidComponentsApi::class)
++object ObscurantTor {
++    /** What to show the user. Empty while Tor is off. */
++    var status by mutableStateOf("")
++        private set
++
++    private val logger = Logger("ObscurantTor")
++    private val handler = Handler(Looper.getMainLooper())
++    private var service: TorService? = null
++    private var bound = false
++    private var deadline = 0L
++    private val progressPattern = Regex("PROGRESS=(\\d+)")
++
++    private val flags = mapOf(
++        "network.proxy.share_proxy_settings" to false,
++        "network.proxy.socks_remote_dns" to true,
++        "network.proxy.socks5_remote_dns" to true,
++        "network.proxy.failover_direct" to false,
++        "network.proxy.allow_bypass" to false,
++        "media.peerconnection.ice.proxy_only" to true,
++    )
++    private val numbers = mapOf(
++        "network.proxy.socks_port" to PORT,
++        "network.proxy.socks_version" to SOCKS_VERSION,
++        "network.proxy.type" to MANUAL_PROXY,
++    )
++    private val texts = mapOf(
++        "network.proxy.socks" to "127.0.0.1",
++        "network.proxy.no_proxies_on" to "localhost, 127.0.0.1, ::1",
++    )
++
++    private val connection = object : ServiceConnection {
++        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
++            service = (binder as? TorService.LocalBinder)?.service
++        }
++
++        override fun onServiceDisconnected(name: ComponentName?) {
++            service = null
++        }
++    }
++
++    fun isOn(context: Context): Boolean =
++        PreferenceManager.getDefaultSharedPreferences(context.applicationContext).getBoolean(ON_PREF, false)
++
++    private fun remember(context: Context, on: Boolean) {
++        PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++            .edit().putBoolean(ON_PREF, on).apply()
++    }
++
++    private fun runtime(context: Context) = context.components.core.engine as? BrowserPreferencesRuntime
++
++    private fun failed(name: String): (Throwable) -> Unit = {
++        logger.error("could not change $name", it)
++        status = "Could not change the proxy settings"
++    }
++
++    private fun pointAtTor(context: Context) {
++        val engine = runtime(context) ?: return
++        texts.forEach { (name, value) -> engine.setBrowserPref(name, value, Branch.USER, {}, failed(name)) }
++        flags.forEach { (name, value) -> engine.setBrowserPref(name, value, Branch.USER, {}, failed(name)) }
++        numbers.forEach { (name, value) -> engine.setBrowserPref(name, value, Branch.USER, {}, failed(name)) }
++    }
++
++    private fun portFree(): Boolean = try {
++        ServerSocket(PORT, 1, InetAddress.getByName("127.0.0.1")).close()
++        true
++    } catch (e: IOException) {
++        logger.warn("Tor port is taken", e)
++        false
++    }
++
++    fun start(context: Context) {
++        val app = context.applicationContext
++        if (bound) {
++            return
++        }
++        pointAtTor(app)
++        remember(app, true)
++        if (!portFree()) {
++            status = "Port $PORT is in use by another app. Pages will not load until it is free."
++            return
++        }
++        status = "Starting Tor"
++        try {
++            TorService.getTorrc(app).writeText(
++                "SocksPort 127.0.0.1:$PORT\nClientOnly 1\nAvoidDiskWrites 1\nSafeLogging 1\n",
++            )
++            val intent = Intent(app, TorService::class.java).setAction(TorService.ACTION_START)
++            app.startService(intent)
++            bound = app.bindService(intent, connection, Context.BIND_AUTO_CREATE)
++        } catch (e: IOException) {
++            logger.error("could not start Tor", e)
++            status = "Could not start Tor. Pages will not load until you turn it off."
++            return
++        }
++        deadline = System.currentTimeMillis() + TIMEOUT_MS
++        poll()
++    }
++
++    private fun poll() {
++        handler.postDelayed(
++            {
++                if (!bound) {
++                    return@postDelayed
++                }
++                val phase = service?.getInfo("status/bootstrap-phase").orEmpty()
++                val percent = progressPattern.find(phase)?.groupValues?.get(1)?.toIntOrNull() ?: 0
++                if (percent >= DONE) {
++                    status = "Connected through Tor"
++                } else if (System.currentTimeMillis() > deadline) {
++                    status = "Tor did not connect in time. Pages will not load until you turn it off."
++                } else {
++                    status = "Connecting to Tor: $percent%"
++                    poll()
++                }
++            },
++            POLL_MS,
++        )
++    }
++
++    fun stop(context: Context) {
++        val app = context.applicationContext
++        handler.removeCallbacksAndMessages(null)
++        if (bound) {
++            app.unbindService(connection)
++            bound = false
++        }
++        service = null
++        app.stopService(Intent(app, TorService::class.java))
++        remember(app, false)
++        status = ""
++        val engine = runtime(app) ?: return
++        (texts.keys + flags.keys + numbers.keys).forEach { engine.clearBrowserUserPref(it, {}, failed(it)) }
++    }
++
++    fun toggle(context: Context) = if (isOn(context)) stop(context) else start(context)
++}
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/ObscurantGoogleContainer.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/ObscurantGoogleContainer.kt
 @@ -0,0 +1,75 @@
@@ -4509,7 +6919,7 @@
 +}
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/ObscurantUpdate.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/ObscurantUpdate.kt
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,73 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -4521,6 +6931,7 @@
 +import android.os.Looper
 +import android.widget.Toast
 +import androidx.preference.PreferenceManager
++import org.mozilla.fenix.tools.ObscurantTor
 +import org.json.JSONArray
 +import java.net.HttpURLConnection
 +import java.net.URL
@@ -4532,7 +6943,7 @@
 +object ObscurantUpdate {
 +    const val ENABLED_PREF = "pref_key_obscurant_update_check"
 +    private const val LAST_PREF = "obscurant_update_last_check"
-+    private const val BUILD = 6
++    private const val BUILD = 7
 +    private const val DAY_MS = 24L * 60 * 60 * 1000
 +    private const val TIMEOUT_MS = 12000
 +    private const val HTTP_OK = 200
@@ -4543,7 +6954,7 @@
 +        val app = context.applicationContext
 +        val prefs = PreferenceManager.getDefaultSharedPreferences(app)
 +        val now = System.currentTimeMillis()
-+        if (!prefs.getBoolean(ENABLED_PREF, true) || now - prefs.getLong(LAST_PREF, 0L) < DAY_MS) {
++        if (ObscurantTor.isOn(app) || !prefs.getBoolean(ENABLED_PREF, true) || now - prefs.getLong(LAST_PREF, 0L) < DAY_MS) {
 +            return
 +        }
 +        prefs.edit().putLong(LAST_PREF, now).apply()
@@ -4779,6 +7190,1114 @@
  
      /**
       * Distribution ID that represents if the app was installed via a distribution deal
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/voice/ObscurantVoice.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/voice/ObscurantVoice.kt
+@@ -0,0 +1,474 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.voice
++
++import android.Manifest
++import android.annotation.SuppressLint
++import android.content.Context
++import android.content.pm.PackageManager
++import android.graphics.drawable.GradientDrawable
++import android.media.AudioFormat
++import android.media.AudioRecord
++import android.media.MediaRecorder
++import android.os.SystemClock
++import android.text.InputType
++import android.view.Gravity
++import android.view.ViewGroup
++import android.widget.EditText
++import android.widget.FrameLayout
++import android.widget.ImageView
++import android.widget.LinearLayout
++import android.widget.TextView
++import androidx.appcompat.app.AlertDialog
++import androidx.core.app.ActivityCompat
++import androidx.core.content.ContextCompat
++import androidx.lifecycle.DefaultLifecycleObserver
++import androidx.lifecycle.LifecycleOwner
++import androidx.preference.PreferenceManager
++import mozilla.components.concept.engine.mediasession.MediaSession
++import mozilla.components.support.base.log.logger.Logger
++import org.mozilla.fenix.HomeActivity
++import org.mozilla.fenix.R
++import org.mozilla.fenix.ext.components
++import java.lang.ref.WeakReference
++import kotlin.concurrent.thread
++import kotlin.math.sqrt
++
++private const val RATE = 16_000
++private const val FRAME = 480
++private const val FRAMES_PER_SECOND = RATE / FRAME
++private const val END_SILENCE = (0.45 * FRAMES_PER_SECOND).toInt()
++private const val MIN_SPEECH = (0.3 * FRAMES_PER_SECOND).toInt()
++private const val MAX_FRAMES = 7 * FRAMES_PER_SECOND
++private const val LEAD_FRAMES = 8
++private const val MIN_LEVEL = 250.0
++private const val FLOOR_RISE = 0.02
++private const val SPEECH_OVER_FLOOR = 3.0
++private const val TARGET_LEVEL = 3500.0
++private const val MAX_GAIN = 60.0
++private const val FULL_SCALE = 32768f
++private const val CLIP = 32000.0
++private const val LOUD_PERCENTILE = 0.9
++private const val ARM_MS = 8_000L
++private const val ANSWER_MS = 15_000L
++private const val BUBBLE_MS = 4_000L
++private const val LONG_BUBBLE_MS = 9_000L
++private const val LONG_TEXT = 90
++private const val MAX_THREADS = 6
++private const val PERMISSION_REQUEST = 7311
++private const val MASCOT_DP = 52
++private const val BOTTOM_DP = 112
++private const val SIDE_DP = 12
++private const val PROMPT = "Hey Obscurity. New tab. Close tab. Scroll down. Scroll up. Go back. Reload. " +
++    "Open YouTube. Search for. Zoom in. Yes. No. Stop listening."
++
++/**
++ * Obscurity, the voice assistant. It listens only while the browser is on screen, recognises speech on
++ * the phone, drops anything that does not start with the wake phrase, and never saves or sends audio.
++ */
++object ObscurantVoice {
++    const val ENABLED = "obscurant_voice_enabled"
++    const val WAKE_ALWAYS = "obscurant_voice_wake"
++    const val CONFIRM_SITES = "obscurant_voice_confirm_sites"
++    const val DURING_SOUND = "obscurant_voice_during_sound"
++
++    private val logger = Logger("ObscurantVoice")
++    private val engine = WhisperEngine()
++    private var host: WeakReference<HomeActivity>? = null
++    private var commands: VoiceCommands? = null
++    private var bubble: TextView? = null
++    private var ring: GradientDrawable? = null
++    private var mascot: LinearLayout? = null
++    private var downloading = false
++
++    @Volatile
++    private var listener: Thread? = null
++
++    @Volatile
++    private var armedUntil = 0L
++    private var pending: (() -> Reply)? = null
++    private var pendingUntil = 0L
++
++    private fun prefs(context: Context) = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++
++    fun flag(context: Context, name: String, fallback: Boolean) = prefs(context).getBoolean(name, fallback)
++
++    fun setFlag(context: Context, name: String, value: Boolean) {
++        prefs(context).edit().putBoolean(name, value).apply()
++    }
++
++    fun isEnabled(context: Context) = flag(context, ENABLED, false)
++
++    private fun hasMicrophone(context: Context) =
++        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
++            PackageManager.PERMISSION_GRANTED
++
++    /** Ties the assistant to the browser screen, so it stops whenever the browser is not in front. */
++    fun attach(activity: HomeActivity) {
++        activity.lifecycle.addObserver(
++            object : DefaultLifecycleObserver {
++                override fun onResume(owner: LifecycleOwner) {
++                    host = WeakReference(activity)
++                    commands = VoiceCommands(
++                        activity,
++                        { flag(activity, CONFIRM_SITES, true) },
++                        { setEnabled(activity, false) },
++                        { show(it) },
++                    )
++                    refresh(activity)
++                }
++
++                override fun onPause(owner: LifecycleOwner) {
++                    stopListening()
++                }
++
++                override fun onDestroy(owner: LifecycleOwner) {
++                    removeMascot()
++                    commands = null
++                }
++            },
++        )
++    }
++
++    private fun refresh(activity: HomeActivity) {
++        if (isEnabled(activity) && VoiceModel.isReady(activity)) {
++            addMascot(activity)
++            if (hasMicrophone(activity)) {
++                startListening(activity)
++            }
++        } else {
++            stopListening()
++            if (!downloading) {
++                removeMascot()
++            }
++        }
++    }
++
++    /** Turns the assistant on or off. Turning it on may first ask to fetch the model and use the microphone. */
++    fun setEnabled(activity: HomeActivity, on: Boolean) {
++        setFlag(activity, ENABLED, on)
++        if (on && !VoiceModel.isReady(activity)) {
++            askToDownload(activity)
++            return
++        }
++        if (on && !hasMicrophone(activity)) {
++            ActivityCompat.requestPermissions(
++                activity,
++                arrayOf(Manifest.permission.RECORD_AUDIO),
++                PERMISSION_REQUEST,
++            )
++        }
++        refresh(activity)
++    }
++
++    private fun askToDownload(activity: HomeActivity) {
++        AlertDialog.Builder(activity)
++            .setTitle("Download the speech model?")
++            .setMessage(
++                "Obscurity needs a 141 MB speech model, downloaded once from huggingface.co and checked " +
++                    "against a fixed checksum. After that, speech is recognised on this phone. Nothing it " +
++                    "hears is saved or sent.",
++            )
++            .setPositiveButton("Download") { _, _ -> download(activity) }
++            .setNegativeButton(android.R.string.cancel) { _, _ -> setFlag(activity, ENABLED, false) }
++            .setOnCancelListener { setFlag(activity, ENABLED, false) }
++            .show()
++    }
++
++    private fun download(activity: HomeActivity) {
++        if (downloading) return
++        downloading = true
++        addMascot(activity)
++        val app = activity.applicationContext
++        thread(name = "obscurant-voice-model") {
++            val ok = VoiceModel.download(app) { percent -> show("Downloading the speech model: $percent%") }
++            activity.runOnUiThread {
++                downloading = false
++                if (ok) {
++                    show("Ready. Say \"hey obscurity\" or tap me.")
++                    setEnabled(activity, true)
++                } else {
++                    setFlag(app, ENABLED, false)
++                    show("The download failed. Try turning voice on again.")
++                }
++            }
++        }
++    }
++
++    @SuppressLint("MissingPermission")
++    private fun startListening(context: Context) {
++        if (listener != null) return
++        val app = context.applicationContext
++        listener = thread(name = "obscurant-voice") {
++            if (!engine.load(VoiceModel.file(app))) {
++                show("The speech engine could not start")
++                return@thread
++            }
++            val minimum = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
++            val record = AudioRecord(
++                MediaRecorder.AudioSource.VOICE_RECOGNITION,
++                RATE,
++                AudioFormat.CHANNEL_IN_MONO,
++                AudioFormat.ENCODING_PCM_16BIT,
++                maxOf(minimum, RATE * 2),
++            )
++            if (record.state != AudioRecord.STATE_INITIALIZED) {
++                show("I can't use the microphone")
++                record.release()
++                return@thread
++            }
++            try {
++                record.startRecording()
++                capture(app, record)
++            } catch (e: IllegalStateException) {
++                logger.error("recording stopped", e)
++            } finally {
++                record.release()
++            }
++        }
++    }
++
++    private fun level(frame: ShortArray): Double {
++        var sum = 0.0
++        for (sample in frame) sum += sample.toDouble() * sample
++        return sqrt(sum / frame.size)
++    }
++
++    /** Cuts the microphone stream into phrases with a simple loudness gate, as the desktop helper does. */
++    private fun capture(context: Context, record: AudioRecord) {
++        val frame = ShortArray(FRAME)
++        val lead = ArrayDeque<ShortArray>()
++        val phrase = mutableListOf<ShortArray>()
++        var floor = MIN_LEVEL
++        var speech = 0
++        var silence = 0
++        var startedAt = 0L
++        while (listener === Thread.currentThread()) {
++            if (record.read(frame, 0, FRAME) != FRAME) continue
++            val loudness = level(frame)
++            val talking = loudness > maxOf(MIN_LEVEL, floor * SPEECH_OVER_FLOOR)
++            if (!talking) floor += (loudness - floor) * FLOOR_RISE
++            if (phrase.isEmpty()) {
++                lead.addLast(frame.copyOf())
++                if (lead.size > LEAD_FRAMES) lead.removeFirst()
++                if (talking) {
++                    phrase.addAll(lead)
++                    lead.clear()
++                    speech = 1
++                    silence = 0
++                    startedAt = SystemClock.elapsedRealtime()
++                }
++                continue
++            }
++            phrase.add(frame.copyOf())
++            if (talking) {
++                speech++
++                silence = 0
++            } else {
++                silence++
++            }
++            if (silence >= END_SILENCE || phrase.size >= MAX_FRAMES) {
++                if (speech >= MIN_SPEECH && mayListen(context)) {
++                    recognise(phrase, startedAt)
++                }
++                phrase.clear()
++            }
++        }
++    }
++
++    private fun mayListen(context: Context) =
++        flag(context, DURING_SOUND, false) ||
++            context.components.core.store.state.tabs.none {
++                it.mediaSessionState?.playbackState == MediaSession.PlaybackState.PLAYING &&
++                    it.mediaSessionState?.muted == false
++            }
++
++    /** Brings a quiet voice up to a level the recogniser likes. */
++    private fun boost(phrase: List<ShortArray>): FloatArray {
++        val levels = phrase.map { level(it) }.sorted()
++        val loud = levels[((levels.size - 1) * LOUD_PERCENTILE).toInt()].coerceAtLeast(1.0)
++        val gain = (TARGET_LEVEL / loud).coerceIn(1.0, MAX_GAIN)
++        val out = FloatArray(phrase.size * FRAME)
++        phrase.forEachIndexed { f, samples ->
++            for (i in samples.indices) {
++                out[f * FRAME + i] = (samples[i] * gain).coerceIn(-CLIP, CLIP).toFloat() / FULL_SCALE
++            }
++        }
++        return out
++    }
++
++    private fun recognise(phrase: List<ShortArray>, startedAt: Long) {
++        val threads = Runtime.getRuntime().availableProcessors().coerceAtMost(MAX_THREADS)
++        val heard = engine.transcribe(boost(phrase), PROMPT, threads)
++        host?.get()?.let { activity -> activity.runOnUiThread { handle(activity, heard, startedAt) } }
++    }
++
++    /** [startedAt] is when the phrase began, so slow recognition does not use up the time to speak. */
++    private fun handle(activity: HomeActivity, heard: String, startedAt: Long) {
++        val text = VoiceText.normalize(heard)
++        if (text.isEmpty()) return
++        val now = startedAt
++        val waiting = pending
++        if (waiting != null && now < pendingUntil) {
++            val answer = VoiceText.afterWake(text) ?: text
++            if (answer.matches(Regex("(yes|yeah|yep|yup|sure|okay|ok|do it|go ahead|correct)"))) {
++                pending = null
++                finish(waiting())
++                return
++            }
++            if (answer.matches(Regex("(no|nope|cancel|stop|never mind|nevermind)"))) {
++                pending = null
++                show("Okay, cancelled")
++                return
++            }
++        }
++        val afterWake = VoiceText.afterWake(text)
++        val armed = now < armedUntil
++        val command = when {
++            armed -> afterWake ?: text
++            flag(activity, WAKE_ALWAYS, true) -> afterWake ?: return
++            else -> return
++        }
++        if (command.isEmpty()) {
++            arm("Yes? I'm listening.")
++            return
++        }
++        armedUntil = 0L
++        runCommand(command)
++    }
++
++    /** Runs one command, whether it was spoken or typed. */
++    fun runCommand(command: String) {
++        val runner = commands ?: return
++        finish(runner.run(command))
++    }
++
++    private fun finish(reply: Reply) {
++        if (reply.confirmed != null) {
++            pending = reply.confirmed
++            pendingUntil = SystemClock.elapsedRealtime() + ANSWER_MS
++        }
++        show(reply.text)
++    }
++
++    private fun arm(message: String) {
++        armedUntil = SystemClock.elapsedRealtime() + ARM_MS
++        show(message)
++    }
++
++    private fun stopListening() {
++        listener = null
++    }
++
++    private fun show(text: String) {
++        val activity = host?.get() ?: return
++        activity.runOnUiThread {
++            val view = bubble ?: return@runOnUiThread
++            view.text = text
++            view.visibility = android.view.View.VISIBLE
++            view.removeCallbacks(hideBubble)
++            view.postDelayed(hideBubble, if (text.length > LONG_TEXT) LONG_BUBBLE_MS else BUBBLE_MS)
++        }
++    }
++
++    private val hideBubble = Runnable { bubble?.visibility = android.view.View.GONE }
++
++    private fun addMascot(activity: HomeActivity) {
++        if (mascot?.isAttachedToWindow == true && mascot?.context === activity) return
++        removeMascot()
++        val density = activity.resources.displayMetrics.density
++        fun px(dp: Int) = (dp * density).toInt()
++        val text = TextView(activity).apply {
++            setTextColor(0xFFFFFFFF.toInt())
++            setPadding(px(SIDE_DP), px(SIDE_DP / 2), px(SIDE_DP), px(SIDE_DP / 2))
++            maxWidth = activity.resources.displayMetrics.widthPixels * 3 / 4
++            background = GradientDrawable().apply {
++                setColor(0xE6101420.toInt())
++                cornerRadius = px(SIDE_DP).toFloat()
++            }
++            visibility = android.view.View.GONE
++        }
++        val circle = GradientDrawable().apply {
++            shape = GradientDrawable.OVAL
++            setColor(0xE6101420.toInt())
++            setStroke(px(2), 0xFF7AA2FF.toInt())
++        }
++        val face = ImageView(activity).apply {
++            setImageResource(R.drawable.obscurant_launcher_fg)
++            background = circle
++            scaleType = ImageView.ScaleType.CENTER_CROP
++            contentDescription = "Obscurity voice assistant. Tap to talk."
++            setOnClickListener {
++                if (hasMicrophone(activity)) {
++                    arm("Listening. Say a command.")
++                } else {
++                    setEnabled(activity, true)
++                }
++            }
++            setOnLongClickListener {
++                showCommands(activity)
++                true
++            }
++        }
++        val box = LinearLayout(activity).apply {
++            orientation = LinearLayout.VERTICAL
++            gravity = Gravity.END
++            addView(text)
++            addView(face, LinearLayout.LayoutParams(px(MASCOT_DP), px(MASCOT_DP)))
++        }
++        val place = FrameLayout.LayoutParams(
++            ViewGroup.LayoutParams.WRAP_CONTENT,
++            ViewGroup.LayoutParams.WRAP_CONTENT,
++            Gravity.BOTTOM or Gravity.END,
++        ).apply { setMargins(0, 0, px(SIDE_DP), px(BOTTOM_DP)) }
++        (activity.window.decorView as ViewGroup).addView(box, place)
++        mascot = box
++        bubble = text
++        ring = circle
++    }
++
++    private fun removeMascot() {
++        mascot?.let { (it.parent as? ViewGroup)?.removeView(it) }
++        mascot = null
++        bubble = null
++        ring = null
++    }
++
++    /** The commands page, with a box for typing a command instead of saying it. */
++    fun showCommands(activity: HomeActivity) {
++        val list = voiceCommandDocs.joinToString("\n\n") { (title, items) ->
++            title.uppercase() + "\n" + items.joinToString("\n") { "“${it.say}”\n    ${it.does}" }
++        }
++        val input = EditText(activity).apply {
++            hint = "Type a command"
++            inputType = InputType.TYPE_CLASS_TEXT
++        }
++        val intro = TextView(activity).apply {
++            text = "Say “hey obscurity”, then a command. Or tap the round logo and speak. " +
++                "It listens only while the browser is on screen. Dictation and clicking numbered links " +
++                "are not in the phone version.\n\n$list"
++        }
++        val padding = (SIDE_DP * 2 * activity.resources.displayMetrics.density).toInt()
++        val column = LinearLayout(activity).apply {
++            orientation = LinearLayout.VERTICAL
++            setPadding(padding, padding / 2, padding, 0)
++            addView(input)
++            addView(android.widget.ScrollView(activity).apply { addView(intro) })
++        }
++        AlertDialog.Builder(activity)
++            .setTitle("Obscurity commands")
++            .setView(column)
++            .setPositiveButton("Run") { _, _ ->
++                val typed = input.text.toString()
++                if (typed.isNotBlank()) {
++                    commands = commands ?: return@setPositiveButton
++                    addMascot(activity)
++                    input.postDelayed({ runCommand(typed) }, 0)
++                }
++            }
++            .setNegativeButton("Close", null)
++            .show()
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/voice/VoiceCommands.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/voice/VoiceCommands.kt
+@@ -0,0 +1,377 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.voice
++
++import android.net.Uri
++import android.os.SystemClock
++import android.text.format.DateFormat
++import android.view.MotionEvent
++import androidx.lifecycle.lifecycleScope
++import androidx.navigation.fragment.NavHostFragment
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.launch
++import mozilla.appservices.places.BookmarkRoot
++import mozilla.components.browser.state.selector.selectedTab
++import mozilla.components.browser.state.state.TabSessionState
++import org.mozilla.fenix.HomeActivity
++import org.mozilla.fenix.NavGraphDirections
++import org.mozilla.fenix.R
++import org.mozilla.fenix.browser.browsingmode.BrowsingMode
++import org.mozilla.fenix.ext.components
++import java.util.Date
++import kotlin.random.Random
++
++private const val SWIPE_MS = 120L
++private const val SWIPE_STEPS = 8
++private const val LONG_SWIPES = 8
++private const val SECONDS_PER_MINUTE = 60
++private const val MILLIS = 1000L
++private const val MAX_TIMER_SECONDS = 3 * 60 * 60
++
++/** One line of the commands page. */
++internal data class CommandDoc(val say: String, val does: String)
++
++internal val voiceCommandDocs = listOf(
++    "Tabs" to listOf(
++        CommandDoc("new tab, new private tab", "Open a tab"),
++        CommandDoc("close tab, reopen tab, duplicate tab", "Manage this tab"),
++        CommandDoc("next tab, previous tab, tab three, last tab", "Move between tabs"),
++        CommandDoc("switch to youtube", "Jump to the open tab whose title or address matches"),
++        CommandDoc("list tabs, how many tabs", "See what is open"),
++        CommandDoc("close other tabs", "Close every other tab (asks first)"),
++    ),
++    "Open and search" to listOf(
++        CommandDoc("open youtube", "Open a well known site"),
++        CommandDoc("open example dot com", "Say a web address with \"dot\" (asks first)"),
++        CommandDoc("search for cats", "Search with your default search engine"),
++        CommandDoc("search youtube for lofi beats", "Search YouTube, Wikipedia, GitHub, Amazon or Reddit"),
++    ),
++    "Page" to listOf(
++        CommandDoc("go back, go forward, reload", "Move around"),
++        CommandDoc("scroll down, scroll up, top, bottom", "Scroll the page"),
++        CommandDoc("pause, play, skip ahead, skip back", "Control the video or music"),
++        CommandDoc("mute tab", "Mute or unmute this tab's media"),
++        CommandDoc("bookmark this page, history, bookmarks, downloads, settings", "Browser actions"),
++    ),
++    "More" to listOf(
++        CommandDoc("what time is it, what day is it", "Clock and calendar"),
++        CommandDoc("timer for 5 minutes", "A timer while the browser is open"),
++        CommandDoc("flip a coin, roll a die, tell me a joke", "For fun"),
++        CommandDoc("what can i say, again, stop listening", "Help, repeat, and turn voice off"),
++    ),
++)
++
++private val sites = mapOf(
++    "youtube" to "www.youtube.com",
++    "google" to "www.google.com",
++    "gmail" to "mail.google.com",
++    "github" to "github.com",
++    "wikipedia" to "en.wikipedia.org",
++    "reddit" to "www.reddit.com",
++    "amazon" to "www.amazon.com",
++    "twitter" to "x.com",
++    "netflix" to "www.netflix.com",
++    "twitch" to "www.twitch.tv",
++    "spotify" to "open.spotify.com",
++    "maps" to "www.google.com/maps",
++    "duckduckgo" to "duckduckgo.com",
++)
++
++private val siteSearches = mapOf(
++    "youtube" to "https://www.youtube.com/results?search_query=",
++    "wikipedia" to "https://en.wikipedia.org/w/index.php?search=",
++    "github" to "https://github.com/search?q=",
++    "amazon" to "https://www.amazon.com/s?k=",
++    "reddit" to "https://www.reddit.com/search/?q=",
++)
++
++private val jokes = listOf(
++    "Why do programmers prefer dark mode? Because light attracts bugs.",
++    "I told my browser a secret. It went incognito.",
++    "Why did the tab go to therapy? Too many unresolved issues.",
++)
++
++private val hostName = Regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,24}$")
++
++/** What a command did. A question waits for a yes before [confirmed] runs. */
++internal data class Reply(
++    val text: String,
++    val understood: Boolean = true,
++    val confirmed: (() -> Reply)? = null,
++)
++
++/**
++ * Matches a spoken line against a fixed list of commands, as on desktop. There is no free form AI, so
++ * nothing a stranger says or a page plays can make it do anything outside this list.
++ */
++internal class VoiceCommands(
++    private val activity: HomeActivity,
++    private val confirmNewSites: () -> Boolean,
++    private val stopListening: () -> Unit,
++    private val say: (String) -> Unit,
++) {
++    private var last = ""
++
++    private val components get() = activity.components
++    private val state get() = components.core.store.state
++    private val tab: TabSessionState? get() = state.selectedTab
++    private val tabs get() = components.useCases.tabsUseCases
++    private val session get() = components.useCases.sessionUseCases
++
++    private val navController
++        get() = (activity.supportFragmentManager.findFragmentById(R.id.container) as? NavHostFragment)?.navController
++
++    private fun showBrowser() {
++        navController?.let {
++            if (it.currentDestination?.id != R.id.browserFragment) {
++                it.navigate(R.id.browserFragment)
++            }
++        }
++    }
++
++    private fun load(url: String, forceSearch: Boolean = false) {
++        showBrowser()
++        components.useCases.fenixBrowserUseCases.loadUrlOrSearch(
++            searchTermOrURL = url,
++            newTab = true,
++            private = activity.browsingModeManager.mode.isPrivate,
++            forceSearch = forceSearch,
++        )
++    }
++
++    private fun newTab(private: Boolean): Reply {
++        activity.browsingModeManager.mode = if (private) BrowsingMode.Private else BrowsingMode.Normal
++        navController?.navigate(NavGraphDirections.actionGlobalHome())
++        return Reply(if (private) "New private tab" else "New tab")
++    }
++
++    private fun sameKindTabs(): List<TabSessionState> {
++        val private = tab?.content?.private ?: false
++        return state.tabs.filter { it.content.private == private }
++    }
++
++    private fun select(target: TabSessionState): Reply {
++        tabs.selectTab(target.id)
++        showBrowser()
++        return Reply(target.content.title.ifEmpty { target.content.url })
++    }
++
++    private fun step(offset: Int): Reply {
++        val list = sameKindTabs()
++        if (list.isEmpty()) return Reply("No tabs are open")
++        val index = list.indexOfFirst { it.id == tab?.id }.coerceAtLeast(0)
++        return select(list[(index + offset + list.size) % list.size])
++    }
++
++    /** A finger swipe over the middle of the screen, which scrolls whatever page is showing. */
++    private fun swipe(down: Boolean, times: Int) {
++        val view = activity.window.decorView
++        activity.lifecycleScope.launch(Dispatchers.Main) {
++            repeat(times) {
++                val x = view.width / 2f
++                val from = view.height * (if (down) 0.72f else 0.3f)
++                val to = view.height * (if (down) 0.3f else 0.72f)
++                val start = SystemClock.uptimeMillis()
++                fun send(action: Int, y: Float) {
++                    val event = MotionEvent.obtain(start, SystemClock.uptimeMillis(), action, x, y, 0)
++                    view.dispatchTouchEvent(event)
++                    event.recycle()
++                }
++                send(MotionEvent.ACTION_DOWN, from)
++                for (i in 1..SWIPE_STEPS) {
++                    delay(SWIPE_MS / SWIPE_STEPS)
++                    send(MotionEvent.ACTION_MOVE, from + (to - from) * i / SWIPE_STEPS)
++                }
++                send(MotionEvent.ACTION_UP, to)
++                delay(SWIPE_MS * 2)
++            }
++        }
++    }
++
++    private fun media(action: String): Reply {
++        val playing = tab?.takeIf { it.mediaSessionState != null }
++            ?: state.tabs.firstOrNull { it.mediaSessionState != null }
++        val media = playing?.mediaSessionState ?: return Reply("I don't see a video or music playing")
++        when (action) {
++            "pause" -> media.controller.pause()
++            "play" -> media.controller.play()
++            "skip ahead" -> media.controller.seekForward()
++            "skip back" -> media.controller.seekBackward()
++            else -> media.controller.muteAudio(!media.muted)
++        }
++        return Reply(action.replaceFirstChar { it.uppercase() })
++    }
++
++    private fun open(name: String): Reply {
++        val spoken = name.removePrefix("up ").trim()
++        sites[spoken.replace(" ", "")]?.let {
++            load("https://$it")
++            return Reply("Opening $spoken")
++        }
++        val address = spoken.replace(" dot ", ".").replace(" ", "")
++        if (!hostName.matches(address)) {
++            return Reply("I don't know a site called $spoken", understood = false)
++        }
++        val go = {
++            load("https://$address")
++            Reply("Opening $address")
++        }
++        return if (confirmNewSites()) Reply("Open $address? Say yes or no.", confirmed = go) else go()
++    }
++
++    private fun search(words: String, site: String?): Reply {
++        val prefix = site?.let { siteSearches[it] }
++        if (prefix != null) {
++            load(prefix + Uri.encode(words))
++        } else {
++            load(words, forceSearch = true)
++        }
++        return Reply("Searching for $words")
++    }
++
++    private fun timer(amount: Int, unit: String): Reply {
++        val seconds = if (unit.startsWith("sec")) amount else amount * SECONDS_PER_MINUTE
++        if (seconds !in 1..MAX_TIMER_SECONDS) return Reply("I can time up to three hours")
++        activity.lifecycleScope.launch {
++            delay(seconds * MILLIS)
++            say("Time's up! Your $amount $unit timer is done.")
++        }
++        return Reply("Timer set for $amount $unit")
++    }
++
++    private fun go(destination: Int, name: String): Reply {
++        navController?.navigate(destination)
++        return Reply(name)
++    }
++
++    private fun withTab(done: String, action: (TabSessionState) -> Unit): Reply {
++        val current = tab ?: return Reply("No tab is open")
++        action(current)
++        return Reply(done)
++    }
++
++    private fun tabCommand(text: String): Reply? = when {
++        text == "new tab" -> newTab(false)
++        text == "new private tab" || text == "new private window" -> newTab(true)
++        text == "close tab" -> withTab("Tab closed") { tabs.removeTab(it.id) }
++        text.matches(Regex("(reopen|restore)( the)?( closed)? tab")) -> {
++            tabs.undo()
++            showBrowser()
++            Reply("Tab restored")
++        }
++        text == "duplicate tab" -> withTab("Tab duplicated") { tabs.duplicateTab(it) }
++        text == "next tab" -> step(1)
++        text == "previous tab" -> step(-1)
++        text == "first tab" -> sameKindTabs().firstOrNull()?.let { select(it) } ?: Reply("No tabs are open")
++        text == "last tab" -> sameKindTabs().lastOrNull()?.let { select(it) } ?: Reply("No tabs are open")
++        text == "how many tabs" -> Reply("You have ${sameKindTabs().size} tabs open")
++        text == "list tabs" -> Reply(
++            sameKindTabs().take(8).joinToString("\n") { it.content.title.ifEmpty { it.content.url } }
++                .ifEmpty { "No tabs are open" },
++        )
++        text == "close other tabs" -> {
++            val others = sameKindTabs().filter { it.id != tab?.id }.map { it.id }
++            Reply("Close ${others.size} other tabs? Say yes or no.") {
++                tabs.removeTabs(others)
++                Reply("Closed")
++            }
++        }
++        else -> numberedTab(text) ?: namedTab(text)
++    }
++
++    private fun numberedTab(text: String): Reply? {
++        val word = Regex("(?:(?:switch|go) to )?tab (\\w+)").matchEntire(text)?.groupValues?.get(1) ?: return null
++        val number = VoiceText.number(word) ?: return null
++        return sameKindTabs().getOrNull(number - 1)?.let { select(it) } ?: Reply("There is no tab $number")
++    }
++
++    private fun namedTab(text: String): Reply? {
++        val name = Regex("switch to (.+)").matchEntire(text)?.groupValues?.get(1) ?: return null
++        return sameKindTabs()
++            .firstOrNull { name in it.content.title.lowercase() || name.replace(" ", "") in it.content.url }
++            ?.let { select(it) } ?: Reply("No open tab matches $name")
++    }
++
++    private fun pageCommand(text: String): Reply? = when (text) {
++        "go back" -> withTab("Back") { session.goBack(it.id) }
++        "go forward" -> withTab("Forward") { session.goForward(it.id) }
++        "reload" -> withTab("Reloading") { session.reload(it.id) }
++        "scroll down" -> Reply("Scrolling down").also { swipe(true, 1) }
++        "scroll up" -> Reply("Scrolling up").also { swipe(false, 1) }
++        "bottom" -> Reply("Going to the bottom").also { swipe(true, LONG_SWIPES) }
++        "top" -> Reply("Going to the top").also { swipe(false, LONG_SWIPES) }
++        "pause", "play", "skip ahead", "skip back", "mute tab" -> media(text)
++        "bookmark this page" -> withTab("Bookmarked") { current ->
++            activity.lifecycleScope.launch(Dispatchers.IO) {
++                components.core.bookmarksStorage
++                    .addItem(BookmarkRoot.Mobile.id, current.content.url, current.content.title, null)
++            }
++        }
++        "history", "show history", "open history" -> go(R.id.action_global_historyFragment, "History")
++        "bookmarks", "show bookmarks", "open bookmarks" -> go(R.id.action_global_bookmarkFragment, "Bookmarks")
++        "downloads", "show downloads", "open downloads" -> go(R.id.action_global_downloadsFragment, "Downloads")
++        "settings", "open settings" -> go(R.id.action_global_settingsFragment, "Settings")
++        else -> null
++    }
++
++    private fun smallTalk(text: String): Reply? = when {
++        text == "what time is it" -> Reply("It's ${DateFormat.getTimeFormat(activity).format(Date())}")
++        text.matches(Regex("(what day is it|what's the date|what is the date)( today)?")) ->
++            Reply("It's ${DateFormat.getLongDateFormat(activity).format(Date())}")
++        text == "flip a coin" -> Reply(if (Random.nextBoolean()) "Heads" else "Tails")
++        text == "roll a die" -> Reply("You rolled ${Random.nextInt(1, 7)}")
++        text == "tell me a joke" -> Reply(jokes.random())
++        text.matches(Regex("(hello|hi|hey|hey there|hi there|yo|sup)")) ->
++            Reply("Hi! I'm Obscurity. Say \"what can I say\" to see my tricks.")
++        text.matches(Regex("(thank you|thanks|thanks a lot|cheers)")) -> Reply("You're welcome!")
++        text.matches(Regex("(who|what) are you")) ->
++            Reply("I'm Obscurity, your browser's helper. I only run on this phone.")
++        else -> null
++    }
++
++    private fun openOrSearch(text: String): Reply? {
++        Regex("search (youtube|wikipedia|github|amazon|reddit) (?:for )?(.+)").matchEntire(text)?.let {
++            return search(it.groupValues[2], it.groupValues[1])
++        }
++        Regex("search (?:for )?(.+)").matchEntire(text)?.let { return search(it.groupValues[1], null) }
++        Regex("(?:open|go to) (.+)").matchEntire(text)?.let { return open(it.groupValues[1]) }
++        return Regex("(?:set (?:a )?)?timer (?:for )?(\\w+) (seconds?|minutes?)").matchEntire(text)?.let {
++            VoiceText.number(it.groupValues[1])?.let { amount -> timer(amount, it.groupValues[2]) }
++        }
++    }
++
++    private fun single(text: String): Reply? = when (text) {
++        "" -> Reply("Yes? Say a command, or \"what can I say\".")
++        "stop listening", "go to sleep" -> {
++            stopListening()
++            Reply("Voice is off")
++        }
++        "what can i say" -> Reply("Try: new tab, open youtube, search for cats, scroll down, go back, pause.")
++        else -> tabCommand(text) ?: pageCommand(text) ?: smallTalk(text)
++    }
++
++    fun run(heard: String): Reply {
++        val text = VoiceText.canonical(heard)
++        if (text == "again" || text == "repeat" || text == "do that again") {
++            return if (last.isEmpty()) Reply("There is nothing to repeat yet") else run(last)
++        }
++        // "open youtube and scroll down": split only when every part is a command of its own.
++        val parts = text.split(" and ").filter { it.isNotBlank() }
++        if (parts.size > 1 && parts.dropLast(1).none { it.startsWith("search") } && single(text) == null &&
++            parts.all { it.startsWith("open ") || it.startsWith("scroll ") || it in CHAINABLE }
++        ) {
++            return parts.map { run(it) }.last()
++        }
++        val reply = single(text) ?: openOrSearch(text)
++            ?: return Reply("I didn't understand \"$text\"", understood = false)
++        if (reply.understood && text.isNotEmpty()) last = text
++        return reply
++    }
++
++    private companion object {
++        val CHAINABLE = setOf("new tab", "close tab", "go back", "go forward", "reload", "top", "bottom", "pause", "play")
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/voice/VoiceModel.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/voice/VoiceModel.kt
+@@ -0,0 +1,76 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.voice
++
++import android.content.Context
++import mozilla.components.concept.fetch.Request
++import mozilla.components.concept.fetch.isSuccess
++import mozilla.components.support.base.log.logger.Logger
++import org.mozilla.fenix.ext.components
++import java.io.File
++import java.io.IOException
++import java.security.MessageDigest
++
++private const val FILE_NAME = "ggml-base.en.bin"
++private const val URL =
++    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
++private const val SHA256 = "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
++private const val SIZE = 147_964_211L
++private const val BUFFER = 1 shl 16
++private const val PERCENT = 100
++
++/** The speech model: downloaded once, only after the user agrees, and used only if its checksum matches. */
++internal object VoiceModel {
++    private val logger = Logger("ObscurantVoiceModel")
++
++    fun file(context: Context) = File(File(context.filesDir, "obscurant-voice"), FILE_NAME)
++
++    fun isReady(context: Context) = file(context).length() == SIZE
++
++    /** Blocking; call off the main thread. The request goes through the engine, so Tor applies to it. */
++    fun download(context: Context, progress: (Int) -> Unit): Boolean {
++        val target = file(context)
++        val part = File(target.path + ".part")
++        return try {
++            target.parentFile?.mkdirs()
++            val digest = MessageDigest.getInstance("SHA-256")
++            context.components.core.client.fetch(Request(URL)).use { response ->
++                if (!response.isSuccess) {
++                    throw IOException("server answered ${response.status}")
++                }
++                response.body.useStream { input ->
++                    part.outputStream().use { output ->
++                        val buffer = ByteArray(BUFFER)
++                        var done = 0L
++                        var shown = -1
++                        while (true) {
++                            val read = input.read(buffer)
++                            if (read < 0) break
++                            done += read
++                            if (done > SIZE) throw IOException("file is larger than expected")
++                            digest.update(buffer, 0, read)
++                            output.write(buffer, 0, read)
++                            val percent = (done * PERCENT / SIZE).toInt()
++                            if (percent != shown) {
++                                shown = percent
++                                progress(percent)
++                            }
++                        }
++                    }
++                }
++            }
++            val actual = digest.digest().joinToString("") { "%02x".format(it) }
++            if (actual != SHA256) {
++                throw IOException("checksum does not match, so the file was thrown away")
++            }
++            part.renameTo(target)
++        } catch (e: IOException) {
++            logger.error("speech model download failed", e)
++            false
++        } finally {
++            part.delete()
++        }
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/voice/VoiceText.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/voice/VoiceText.kt
+@@ -0,0 +1,129 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.voice
++
++private const val WAKE_RATIO = 0.92
++private const val WAKE_WINDOW = 3
++
++/** Turning what the recogniser heard into the fixed wording the commands are matched against. */
++internal object VoiceText {
++    fun normalize(text: String): String = text.lowercase()
++        .replace(Regex("\\[[^\\]]*]|\\([^)]*\\)"), " ")
++        .replace(Regex("[^a-z0-9' ]+"), " ")
++        .replace(Regex("\\s+"), " ")
++        .trim()
++
++    private fun aliases(wake: String): List<String> {
++        val base = normalize(wake)
++        if (!base.startsWith("hey ")) {
++            return listOf(base)
++        }
++        val word = base.removePrefix("hey ")
++        return listOfNotNull(base, "a $word", word, "obscured".takeIf { word == "obscurity" })
++    }
++
++    /** Longest common subsequence ratio, a close match for the desktop's similarity test. */
++    internal fun similarity(a: String, b: String): Double {
++        if (a.isEmpty() || b.isEmpty()) return 0.0
++        val row = IntArray(b.length + 1)
++        for (ca in a) {
++            var diagonal = 0
++            for (j in 1..b.length) {
++                val above = row[j]
++                row[j] = if (ca == b[j - 1]) diagonal + 1 else maxOf(row[j], row[j - 1])
++                diagonal = above
++            }
++        }
++        return 2.0 * row[b.length] / (a.length + b.length)
++    }
++
++    /**
++     * The command after the wake phrase, or null when the phrase is not in the first few words. Strict
++     * on purpose: a near miss such as "hey brother" must not wake it.
++     */
++    fun afterWake(text: String, wake: String = "hey obscurity"): String? {
++        val words = normalize(text).split(' ').filter { it.isNotEmpty() }
++        val phrases = aliases(wake)
++        fun matchAt(i: Int): Int {
++            for (phrase in phrases) {
++                val count = phrase.split(' ').size
++                val squashed = phrase.replace(" ", "")
++                for (k in intArrayOf(count, count + 1)) {
++                    if (i + k <= words.size &&
++                        similarity(words.subList(i, i + k).joinToString(""), squashed) >= WAKE_RATIO
++                    ) {
++                        return k
++                    }
++                }
++            }
++            return 0
++        }
++        for (start in 0 until minOf(WAKE_WINDOW, words.size)) {
++            val length = matchAt(start)
++            if (length > 0) {
++                var i = start + length
++                val rest = mutableListOf<String>()
++                while (i < words.size && matchAt(i) == 0) {
++                    rest.add(words[i])
++                    i++
++                }
++                return rest.joinToString(" ")
++            }
++        }
++        return null
++    }
++
++    private val synonyms = listOf(
++        "^(?:launch|bring up|pull up|take me to|navigate to|visit|load|head to|jump to)\\s+" to "open ",
++        "^(?:turn|make) (?:it )?(?:up|louder)(?: the volume)?$" to "louder",
++        "^(?:turn|make) (?:it )?(?:down|quieter)(?: the volume)?$" to "quieter",
++        "^volume (?:up|higher)$" to "louder",
++        "^volume (?:down|lower)$" to "quieter",
++        "^(?:open |create |make )?(?:a )?(?:new|blank) tab$" to "new tab",
++        "^close (?:the |this |current |that )?tab$" to "close tab",
++        "^(?:refresh|reload)(?: the| this)?(?: page)?$" to "reload",
++        "^(?:scroll|move|go) (?:the page )?down(?: the page)?$" to "scroll down",
++        "^(?:scroll|move|go) (?:the page )?up(?: the page)?$" to "scroll up",
++        "^(?:go )?to the (top|bottom)(?: of the page)?$" to "\$1",
++        "^(?:stop|pause) (?:the )?(?:video|music|song|playback)$" to "pause",
++        "^(?:play|resume|continue) (?:the )?(?:video|music|song|playback)$" to "play",
++        "^bookmark (?:this|it|the page)$" to "bookmark this page",
++        "^go to (?:the )?(?:previous|last) page$" to "go back",
++        "^back$" to "go back",
++        "^forward$" to "go forward",
++        "^(?:quit|stop|turn off|disable) (?:listening|voice|obscurity)$" to "stop listening",
++        "^what(?:'s| is) the time$" to "what time is it",
++        "^(?:what time is it|current time|time)(?: now)?$" to "what time is it",
++        "^(?:show |list )?(?:my )?(?:open )?tabs$" to "list tabs",
++        "^(?:flip|toss) (?:a )?coin$" to "flip a coin",
++        "^(?:roll|throw) (?:a )?(?:die|dice)$" to "roll a die",
++        "^(?:tell|give) me (?:a )?joke$" to "tell me a joke",
++        "^(?:tell me a )?joke$" to "tell me a joke",
++        "^help$" to "what can i say",
++    ).map { (pattern, result) -> Regex(pattern) to result }
++
++    private val filler = Regex(
++        "^(?:(?:hey|ok|okay|alright|um|uh|er|so|please|can you|could you|would you|will you|i want to|i wanna|" +
++            "i would like to|i'd like to|go ahead and|let's|lets|just|now)\\s+)+",
++    )
++
++    fun canonical(text: String): String {
++        var result = normalize(text).replace(filler, "").removeSuffix(" please").trim()
++        for ((pattern, replacement) in synonyms) {
++            result = result.replace(pattern, replacement)
++        }
++        return result
++    }
++
++    private val numberWords = listOf(
++        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
++        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
++    ).withIndex().associate { it.value to it.index } + mapOf(
++        "twenty" to 20, "thirty" to 30, "forty" to 40, "fifty" to 50, "sixty" to 60, "ninety" to 90,
++        "first" to 1, "second" to 2, "third" to 3,
++    )
++
++    fun number(word: String): Int? = word.toIntOrNull() ?: numberWords[word]
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/voice/WhisperEngine.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/voice/WhisperEngine.kt
+@@ -0,0 +1,37 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.voice
++
++import java.io.File
++
++/** The bundled whisper.cpp speech recogniser. It runs on the phone and only ever sees audio in memory. */
++internal class WhisperEngine {
++    private var handle = 0L
++
++    private external fun nativeInit(path: String): Long
++    private external fun nativeTranscribe(handle: Long, audio: FloatArray, prompt: String, threads: Int): ByteArray
++    private external fun nativeFree(handle: Long)
++
++    @Synchronized
++    fun load(model: File): Boolean {
++        if (handle == 0L) {
++            System.loadLibrary("obscurantvoice")
++            handle = nativeInit(model.absolutePath)
++        }
++        return handle != 0L
++    }
++
++    @Synchronized
++    fun transcribe(audio: FloatArray, prompt: String, threads: Int): String =
++        if (handle == 0L) "" else String(nativeTranscribe(handle, audio, prompt, threads), Charsets.UTF_8)
++
++    @Synchronized
++    fun close() {
++        if (handle != 0L) {
++            nativeFree(handle)
++            handle = 0L
++        }
++    }
++}
 --- a/mobile/android/fenix/app/src/main/res/drawable-night/ic_logo_wordmark_normal.xml
 +++ b/mobile/android/fenix/app/src/main/res/drawable-night/ic_logo_wordmark_normal.xml
 @@ -1,5 +0,0 @@
@@ -5915,6 +9434,27 @@
 +        android:fillType="evenOdd"
 +        android:pathData="M10,7.5H14C15.4,7.5 16.5,8.6 16.5,10V14C16.5,15.4 15.4,16.5 14,16.5H10C8.600,16.500 7.5,15.4 7.5,14V10C7.500,8.600 8.600,7.5 10,7.5Z M10,9.5C9.7,9.5 9.500,9.700 9.500,10V14C9.500,14.300 9.700,14.5 10,14.5H14C14.300,14.5 14.5,14.3 14.5,14V10C14.5,9.700 14.300,9.5 14,9.5Z" />
 +</vector>
+--- a/mobile/android/fenix/app/src/main/res/navigation/nav_graph.xml
++++ b/mobile/android/fenix/app/src/main/res/navigation/nav_graph.xml
+@@ -321,6 +321,18 @@
+         android:name="org.mozilla.fenix.home.pocket.StoriesFragment" />
+ 
+     <dialog
++        android:id="@+id/obscurantToolsSheet"
++        android:name="org.mozilla.fenix.tools.ObscurantToolsSheet" />
++
++    <dialog
++        android:id="@+id/obscurantShieldSheet"
++        android:name="org.mozilla.fenix.shields.ObscurantShieldSheet">
++        <argument
++            android:name="tabId"
++            app:argType="string" />
++    </dialog>
++
++    <dialog
+         android:id="@+id/researchSurfaceDialogFragment"
+         android:name="org.mozilla.fenix.experiments.ResearchSurfaceDialogFragment" >
+         <argument
 --- a/mobile/android/fenix/app/src/main/res/values/colors.xml
 +++ b/mobile/android/fenix/app/src/main/res/values/colors.xml
 @@ -240,7 +240,7 @@
@@ -8962,7 +12502,7 @@
      <!-- The first active link used in privacy_notice_updated_homepage_message -->
      <string name="privacy_notice_updated_homepage_message_privacy_notice" tools:ignore="UnusedResources">Privacy Notice</string>
      <!-- The second active link used in privacy_notice_updated_homepage_message -->
-@@ -4234,37 +4234,45 @@
+@@ -4234,37 +4234,46 @@
      <!-- Toast shown when the user picks an image from the gallery in QR mode but no QR code is found in it -->
      <string name="lens_camera_qr_no_code_found">No QR code found in image</string>
  
@@ -9025,6 +12565,7 @@
 +    <string name="obscurant_update_check_summary" translatable="false">About once a day, checks GitHub for a newer Obscurant and shows a notice. It never installs anything.</string>
 +    <string name="obscurant_updates_title" translatable="false">Obscurant updates</string>
 +    <string name="obscurant_updates_summary" translatable="false">Open the releases page to download a newer version by hand.</string>
++    <string name="obscurant_memory_button" translatable="false">Memory and resource use</string>
  </resources>
 --- a/mobile/android/fenix/app/src/main/res/xml/preferences.xml
 +++ b/mobile/android/fenix/app/src/main/res/xml/preferences.xml
@@ -9302,9 +12843,107 @@
 -    <string name="app_name" translatable="false">Firefox</string>
 +    <string name="app_name" translatable="false">Obscurant</string>
  </resources>
+--- a/mobile/shared/actors/moz.build
++++ b/mobile/shared/actors/moz.build
+@@ -6,6 +6,10 @@
+     BUG_COMPONENT = ("GeckoView", "General")
+ 
+ FINAL_TARGET_FILES.actors += [
++    "/browser/actors/ObscurantAI.sys.mjs",
++    "/browser/actors/ObscurantCosmeticChild.sys.mjs",
++    "/browser/actors/ObscurantCosmeticParent.sys.mjs",
++    "/browser/actors/ObscurantYouTube.sys.mjs",
+     "ContentDelegateChild.sys.mjs",
+     "ContentDelegateParent.sys.mjs",
+     "GeckoViewAutoFillChild.sys.mjs",
+--- a/mobile/shared/components/geckoview/GeckoViewStartup.sys.mjs
++++ b/mobile/shared/components/geckoview/GeckoViewStartup.sys.mjs
+@@ -48,6 +48,20 @@
+ };
+ 
+ const JSWINDOWACTORS = {
++  ObscurantCosmetic: {
++    parent: {
++      esModuleURI: "resource:///actors/ObscurantCosmeticParent.sys.mjs",
++    },
++    child: {
++      esModuleURI: "resource:///actors/ObscurantCosmeticChild.sys.mjs",
++      events: {
++        DOMDocElementInserted: {},
++        DOMContentLoaded: {},
++      },
++    },
++    allFrames: true,
++    messageManagerGroups: ["browsers"],
++  },
+   LoadURIDelegate: {
+     parent: {
+       esModuleURI: "resource:///actors/LoadURIDelegateParent.sys.mjs",
+@@ -289,6 +303,10 @@
+       }
+ 
+       case "profile-after-change": {
++        ChromeUtils.importESModule(
++          "resource://gre/modules/ObscurantLists.sys.mjs"
++        ).ObscurantLists.init();
++
+         GeckoViewUtils.addLazyGetter(this, "GeckoViewRemoteDebugger", {
+           module: "resource://gre/modules/GeckoViewRemoteDebugger.sys.mjs",
+           init: gvrd => gvrd.onInit(),
+--- a/mobile/shared/modules/geckoview/GeckoViewNavigation.sys.mjs
++++ b/mobile/shared/modules/geckoview/GeckoViewNavigation.sys.mjs
+@@ -728,15 +728,32 @@
+         contentPrincipal.privateBrowsingId == 0
+           ? "trackingprotection"
+           : "trackingprotection-pb";
+-      if (
+-        contentPrincipal.isContentPrincipal &&
+-        rawPerms.findIndex(p => p.type == trackingProtectionPermission) == -1
+-      ) {
++      // The blocker looks the exception up under the allow list principal,
++      // which is the https one even for an http page.
++      const allowListPrincipal =
++        this.browser.browsingContext?.currentWindowGlobal
++          ?.contentBlockingAllowListPrincipal;
++      const exceptionPrincipal = allowListPrincipal?.isContentPrincipal
++        ? allowListPrincipal
++        : contentPrincipal;
++      if (contentPrincipal.isContentPrincipal) {
++        const index = permissions.findIndex(
++          p => p.perm == trackingProtectionPermission
++        );
++        if (index != -1) {
++          permissions.splice(index, 1);
++        }
+         permissions.push(
+           this.serializePermission({
+             type: trackingProtectionPermission,
+-            capability: Ci.nsIPermissionManager.DENY_ACTION,
+-            principal: contentPrincipal,
++            capability:
++              Services.perms.testExactPermissionFromPrincipal(
++                exceptionPrincipal,
++                trackingProtectionPermission
++              ) == Ci.nsIPermissionManager.ALLOW_ACTION
++                ? Ci.nsIPermissionManager.ALLOW_ACTION
++                : Ci.nsIPermissionManager.DENY_ACTION,
++            principal: exceptionPrincipal,
+           })
+         );
+       }
+--- a/mobile/shared/modules/geckoview/moz.build
++++ b/mobile/shared/modules/geckoview/moz.build
+@@ -3,6 +3,7 @@
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ EXTRA_JS_MODULES += [
++    "/browser/modules/ObscurantLists.sys.mjs",
+     "BrowserUsageTelemetry.sys.mjs",
+     "ChildCrashHandler.sys.mjs",
+     "DelayedInit.sys.mjs",
 --- a/toolkit/content/jar.mn
 +++ b/toolkit/content/jar.mn
-@@ -235,3 +235,10 @@
+@@ -235,3 +235,11 @@
     content/global/vendor/react-transition-group.js (vendor/react/react-transition-group.js)
     content/global/vendor/redux.js (vendor/react/redux.js)
     content/global/vendor/react-redux.js (vendor/react/react-redux.js)
@@ -9313,5 +12952,6 @@
 +   content/global/lists/easyprivacy.txt (lists/easyprivacy.txt)
 +   content/global/lists/ublock.txt (lists/ublock.txt)
 +   content/global/lists/brave.txt (lists/brave.txt)
++   content/global/lists/ai-sites.txt (lists/ai-sites.txt)
 +   content/global/lists/phishing-abp.txt (lists/phishing-abp.txt)
 +#endif
