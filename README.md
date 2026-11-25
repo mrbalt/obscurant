@@ -3,19 +3,34 @@
 A private, low-memory, fast web browser built on Firefox ESR. Everything is built in: no extensions needed, no accounts, no sync,
 no AI features, nothing sent to Mozilla. Not made, endorsed or supported by Mozilla.
 
-Status: **Linux** (x86_64: `.deb`, `.rpm`, AppImage, tarball and an optimized Arch package) and **Windows** (64-bit, first build, still being tested). Details for Windows are in [`windows/README.md`](windows/README.md).
+Status: **Linux**, **Windows** and **Android** (early test builds on Windows and Android). Pick your platform:
+
+| Platform | Get it | State |
+| --- | --- | --- |
+| **Linux** (any distro) | [`.deb`, `.rpm`, AppImage, tarball](#install-on-linux) | Tested in containers on Debian and Ubuntu; real-desktop testing is limited |
+| **Linux** (Arch-based) | [optimized package](#arch-cachyos-manjaro-and-other-arch-based-optimized-package) | Daily-used and benchmarked; the fastest build |
+| **Windows** 10 and 11, 64-bit | [installer, MSI, portable zip](#install-on-windows-64-bit) | First build, tested mostly under Wine |
+| **Android** 8.0+, 64-bit ARM phones | [APK](#obscurant-for-android-early-test-build) | Early test build, tested only in Waydroid |
 
 ## What is different from Firefox
 
-- **Built-in blocker** (adblock-rust with EasyList, EasyPrivacy, uBlock and Brave filters), plus phishing and malware lists refreshed every 15 minutes.
-- **Shield panel** per site, with one switch per area (ads and trackers, privacy protections, AI-content filters, voice, SponsorBlock).
-- **Google container**: Google sign-in is isolated from the rest of your browsing.
-- **Download scan**: hashes of downloads are checked against VirusTotal with your own API key. Only the hash is sent.
-- **Obscurity**: an optional voice assistant that runs only on your computer (whisper.cpp). Wake phrase or push-to-talk, about 100 commands, a small robot shows what it hears.
-- **SponsorBlock** skipping and **YouTube ad removal**, built in and optional.
-- **No telemetry, no sync, no AI features, no sponsored tiles**; hardened defaults; its own password page with a strong primary password flow.
-- Faster startup and page loads: profile-guided and link-time optimized build.
-- **Update notices**, not auto-update: about once a day it fetches one signed file from this repo's latest release and tells you if a new version is out. It downloads and installs nothing.
+Same on every platform: **no telemetry, no sync or accounts, no AI features, no sponsored tiles, nothing sent to Mozilla**, DuckDuckGo as the default search with Brave Search built in, and hardened defaults.
+
+What each build has today (yes / no, and "untested" where I have not seen it work on that platform):
+
+| Feature | Linux (Arch) | Linux (portable) | Windows | Android |
+| --- | --- | --- | --- | --- |
+| Built-in ad, tracker and phishing blocker (adblock-rust with EasyList, EasyPrivacy, uBlock, Brave and phishing lists) | yes | yes | yes, untested | lists bundled, untested |
+| Shield panel with per-site switches | yes | yes | yes, untested | no |
+| Google container (sign-in isolated from the rest of your browsing) | yes | yes | yes, untested | no |
+| VirusTotal download check with your own key (only the hash is sent) | yes | yes | yes, untested | yes, untested |
+| "Obscurity" voice assistant that runs only on your computer | yes | needs extra packages | yes, microphone untested | no |
+| SponsorBlock and YouTube ad removal | yes | yes | yes, untested | no |
+| Themes, new tab page, its own password page | yes | yes | yes, untested | no |
+| Hide my IP with Tor (one click) | needs `tor` installed | needs `tor` installed | yes, Tor included | no |
+| Update notice (about once a day, signed file from this repo) | yes | yes | not aware of Windows releases yet | no |
+| Profile-guided and link-time optimized build | yes | no | no | no |
+| Memory-saving settings (idle tab unloading, small caches) | yes | yes | partly | partly |
 
 ## How much memory does it use?
 
@@ -141,23 +156,28 @@ What it does **not** do yet (honest list):
 
 ## Build from source
 
+**Linux (Arch package):**
+
     cd pkg
     makepkg -f
 
 This downloads the Firefox ESR source from Mozilla, applies `obscurant-full.patch`, and builds with the saved speed profile
 (`obscurant-pgo.profdata`, attached to the `pgo-1` release). Expect several hours and about 30 GB of disk.
 
+**Linux (portable `.deb`, `.rpm`, AppImage, tarball):** build with Mozilla's own toolchain using `linux/mozconfig` as a template, then run `tools/make_linux_packages.py`.
+
+**Windows:** a cross-build from Linux; see [`windows/README.md`](windows/README.md) and `windows/mozconfig`. The Windows source changes are in `patches/obscurant-full-with-windows.patch`.
+
+**Android:** a build of Firefox for Android with `android/mozconfig.template`; the source changes are in `patches/obscurant-android.patch` and the images come from `tools/make_android_assets.py`. You sign the APK with your own key.
+
 ## Security updates
 
-There is no auto-updater. When Mozilla ships a new ESR security release, Obscurant needs to be rebased and rebuilt. `tools/check_esr.py`
-tells you if you are behind. If you rely on this browser, check it regularly and install new releases promptly.
+Obscurant is based on **Firefox ESR 153.7.0**. There is no auto-updater on any platform. On desktop there is an update notice (Linux and Arch) that tells you when a new release exists; Windows and Android do not tell you yet. When Mozilla ships a new ESR security release, Obscurant has to be rebased and rebuilt by hand. `tools/check_esr.py` tells you if you are behind. If you rely on this browser, check this page regularly and install new releases promptly.
 
 ## License
 
-MPL 2.0 (see `LICENSE`). Third-party data and fonts: see `THIRD-PARTY-NOTICES.md`. The SponsorBlock feature uses data under
-CC BY-NC-SA 4.0 (non-commercial).
-
+MPL 2.0 (see `LICENSE`). Third-party data, fonts and components (including Tor, Python, NumPy and whisper.cpp in the Windows and voice packs): see `THIRD-PARTY-NOTICES.md`. The SponsorBlock feature uses data under CC BY-NC-SA 4.0 (non-commercial).
 
 ## Download checks (VirusTotal)
 
-See [docs/VIRUSTOTAL.md](docs/VIRUSTOTAL.md) for how to get a free key and where to put it on Linux and Windows.
+Downloads are checked by their hash only, with your own free VirusTotal key. See [docs/VIRUSTOTAL.md](docs/VIRUSTOTAL.md) for how to get a key and where to put it on Linux, Windows and Android.

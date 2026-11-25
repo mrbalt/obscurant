@@ -11,13 +11,15 @@ Obscurant can check every file you download against VirusTotal. It sends only th
 
 The free key allows about 4 lookups a minute, which is plenty for downloads.
 
-## Give it to Obscurant (Linux and Windows)
+## Give it to Obscurant (Linux, Windows and Android)
 
 1. In Obscurant open **Settings > Downloads**, find **VirusTotal key**.
 2. Paste the key and press **Save and test**. Obscurant checks the key with VirusTotal before saving it.
 3. The pill next to the row says **Key saved** when it worked.
 
-Where the key is stored (only your user can read it):
+**Android:** open *Settings*, scroll to the bottom, tap *VirusTotal key*, paste the key and tap OK. Finished downloads then show a notice with the result. The key stays inside the app's private storage.
+
+Where the key is stored on desktop (only your user can read it):
 
 - Linux: `~/.config/browser/vt-api-key`
 - Windows: `%APPDATA%\Obscurant\vt-api-key`
