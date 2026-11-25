@@ -113,29 +113,31 @@ Note: this package is built for very new systems (it needs glibc 2.44), so it on
 
 ## Obscurant for Android (early test build)
 
-An Android version built from Firefox for Android (Fenix) and its engine, with the same privacy goals. **This is an early test build for 64-bit ARM phones (Android 8.0 or newer, which covers practically every Samsung phone in use).** It has been tested only in Waydroid so far, not yet on a real phone, so expect rough edges and please report problems: https://github.com/mrbalt/obscurant/issues
+An Android version built from Firefox for Android (Fenix) and its engine, with the same privacy goals. **This is an early test build (build 3) for 64-bit ARM phones, Android 8.0 or newer, which covers practically every Samsung phone in use.** It has been tested only in Waydroid so far, not yet on a real phone, so expect rough edges and please report problems: https://github.com/mrbalt/obscurant/issues
 
 **Install (Samsung and other phones):**
 
-1. On your phone, download `Obscurant-153.7.0-arm64-v8a.apk` from the [Android release](https://github.com/mrbalt/obscurant/releases/tag/android-153.7.0-1).
+1. On your phone, download `Obscurant-153.7.0-arm64-v8a.apk` from the [Android release](https://github.com/mrbalt/obscurant/releases/tag/android-153.7.0-1). If you installed an older build, this one installs over it.
 2. Samsung blocks installs from outside the Play Store by default. In *Settings, Security and privacy, Auto Blocker*, turn Auto Blocker off while you install. Then allow *Install unknown apps* for the browser or Files app you downloaded it with.
 3. Tap the downloaded file and install. If Google Play Protect offers to send the app to Google for scanning, you can choose *Don't send*.
 4. Check the file before you install (recommended): its SHA-256 is in `SHA256SUMS-android`, and the signing certificate fingerprint should be `8585a142582dfadb1b6177d90f461de8672598b5296bcd7d51b6598fa7cf28d4`.
 
+How to tell it is Obscurant and not Firefox: a gray hexagon icon, the name "Obscurant", a dark navy look with blue accents, no welcome tour, no sign-in button.
+
 What it does today:
 
-- Its own name, icon and colors, and its own app id (`org.obscurant.browser`), so it installs next to Firefox without touching it.
-- **No telemetry:** the part of the app that uploads usage data is switched off in the code, not just by a setting. Mozilla's settings server, experiments, sponsored tiles, Pocket stories, Firefox Suggest and the Mozilla VPN are off.
-- DuckDuckGo is the default search engine, with Brave Search added; the Google, Bing and Mozilla partner search entries are gone.
+- Its own name, icon, colors and dark theme, and its own app id (`org.obscurant.browser`), so it installs next to Firefox without touching it.
+- **No telemetry:** the part of the app that uploads usage data is switched off in the code, not just by a setting. Mozilla's settings server, experiments, sponsored tiles, Pocket, Firefox Suggest and the Mozilla VPN are off. No sign-in, account or sync screens, and no AI features.
+- DuckDuckGo is the default search engine, with Brave Search added.
+- The built-in ad, tracker and phishing blocker lists are bundled in the app (not yet verified on a real page).
+- **VirusTotal download check:** at the bottom of Settings, add your free key (the steps are shown there; also see [docs/VIRUSTOTAL.md](docs/VIRUSTOTAL.md)). Only a download's hash is sent.
 - In a clean first-launch test (a fresh install left alone for 150 seconds in Waydroid), the app contacted no Mozilla server.
 
 What it does **not** do yet (honest list):
 
-- **No ad and tracker blocker** like the desktop version, and no phishing or malware warnings: the engine's Safe Browsing (which would contact Google) is off and our own blocker lists are not wired in yet. Treat it with the same care as any browser without these protections.
-- The sign-in and sync screens from Firefox are still in the app (they only contact Mozilla if you use them). The AI features are not removed, only the experiments that would turn them on.
-- None of the desktop extras (shields panel, themes, new tab page, passwords page, voice assistant, update notice).
+- None of the other desktop extras: shields panel, themes chooser, new tab page, passwords page, voice assistant, Tor button, update notice, SponsorBlock, Google container.
+- The speed-optimized build (this one is a plain build).
 - No automatic updates: you install new versions by hand.
-- It looks mostly like Firefox with different colors and logo. Deeper changes come later.
 
 ## Build from source
 

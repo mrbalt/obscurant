@@ -27,6 +27,8 @@ SKIP_DIRS = {"__pycache__", ".claude"}
 SKIP_PREFIXES = (
     "browser/branding/obscurant/",
     "browser/base/content/fonts/",
+    "browser/base/content/lists/",
+    "toolkit/content/lists/",
 )
 SKIP_FILES = {
     "mozconfig",
