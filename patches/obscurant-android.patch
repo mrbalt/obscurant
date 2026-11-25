@@ -3205,6 +3205,44 @@
                      "deepLinkScheme": deepLinkSchemeValue,
              ])
          }
+--- a/mobile/android/fenix/app/src/main/AndroidManifest.xml
++++ b/mobile/android/fenix/app/src/main/AndroidManifest.xml
+@@ -503,6 +503,12 @@
+         </activity>
+ 
+         <activity
++            android:name=".ObscurantSetupActivity"
++            android:exported="false"
++            android:theme="@style/NormalTheme"
++            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout" />
++
++        <activity
+             android:name=".HomeActivity"
+             android:theme="@style/SplashScreenThemeBase"
+             android:exported="true"
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/AppRequestInterceptor.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/AppRequestInterceptor.kt
+@@ -15,6 +15,7 @@
+ import mozilla.components.concept.engine.request.RequestInterceptor
+ import mozilla.components.concept.engine.utils.ABOUT_HOME_URL
+ import mozilla.components.support.ktx.kotlin.isContentUrl
++import org.mozilla.fenix.utils.ObscurantGoogleContainer
+ import org.mozilla.fenix.GleanMetrics.ErrorPage
+ import org.mozilla.fenix.ext.components
+ import org.mozilla.fenix.ext.isOnline
+@@ -48,6 +49,12 @@
+             return null
+         }
+ 
++        if (!isSubframeRequest &&
++            ObscurantGoogleContainer.move(context, engineSession, uri, hasUserGesture || isDirectNavigation)
++        ) {
++            return RequestInterceptor.InterceptionResponse.Deny
++        }
++
+         val services = context.components.services
+         return listOf(
+             services.appLinksInterceptor,
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/FeatureFlags.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/FeatureFlags.kt
 @@ -25,7 +25,7 @@
@@ -3227,7 +3265,18 @@
       * Enables Firefox Labs.
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/HomeActivity.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/HomeActivity.kt
-@@ -731,6 +731,7 @@
+@@ -436,6 +436,10 @@
+         // Checks if Activity is currently in PiP mode if launched from external intents, then exits it
+         checkAndExitPiP()
+ 
++        if (savedInstanceState == null && ObscurantSetupActivity.shouldShow(this, intent)) {
++            startActivity(Intent(this, ObscurantSetupActivity::class.java))
++        }
++
+         // Diagnostic breadcrumb for "Display already aquired" crash:
+         // https://github.com/mozilla-mobile/android-components/issues/7960
+         breadcrumb(
+@@ -731,6 +735,7 @@
      @CallSuper
      override fun onResume() {
          super.onResume()
@@ -3235,6 +3284,296 @@
  
          // Diagnostic breadcrumb for "Display already aquired" crash:
          // https://github.com/mozilla-mobile/android-components/issues/7960
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/ObscurantSetupActivity.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/ObscurantSetupActivity.kt
+@@ -0,0 +1,287 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix
++
++import android.app.role.RoleManager
++import android.content.Context
++import android.content.Intent
++import android.os.Build
++import android.os.Bundle
++import android.provider.Settings
++import androidx.activity.compose.setContent
++import androidx.activity.result.contract.ActivityResultContracts
++import androidx.appcompat.app.AppCompatActivity
++import androidx.compose.animation.core.Animatable
++import androidx.compose.animation.core.tween
++import androidx.compose.foundation.Image
++import androidx.compose.foundation.background
++import androidx.compose.foundation.border
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.safeDrawingPadding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.lazy.grid.GridCells
++import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
++import androidx.compose.foundation.lazy.grid.items
++import androidx.compose.foundation.shape.CircleShape
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material3.Button
++import androidx.compose.material3.LinearProgressIndicator
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedButton
++import androidx.compose.material3.Surface
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.saveable.rememberSaveable
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.alpha
++import androidx.compose.ui.draw.scale
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.res.painterResource
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.text.style.TextAlign
++import androidx.compose.ui.text.style.TextOverflow
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import androidx.preference.PreferenceManager
++import mozilla.components.ExperimentalAndroidComponentsApi
++import mozilla.components.compose.base.theme.acornDarkColorScheme
++import mozilla.components.compose.base.theme.acornLightColorScheme
++import mozilla.components.concept.engine.preferences.Branch
++import mozilla.components.concept.engine.preferences.BrowserPreferencesRuntime
++import mozilla.components.support.base.log.logger.Logger
++import org.mozilla.fenix.ext.components
++import org.mozilla.fenix.theme.OBSCURANT_DEFAULT_THEME
++import org.mozilla.fenix.theme.ObscurantThemes
++import org.mozilla.fenix.theme.obscurantPalettes
++
++private const val DONE_PREF = "obscurant_setup_done"
++private const val LEAN_PREF = "obscurant_memory_lean"
++private const val INTRO_MS = 2000
++private const val FADE_MS = 700
++private const val START_SCALE = 0.8f
++
++/** The first launch screen: a short intro, then the choice of look, memory use and default browser. */
++class ObscurantSetupActivity : AppCompatActivity() {
++    private val roleRequest = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
++
++    override fun onCreate(savedInstanceState: Bundle?) {
++        setTheme(R.style.NormalTheme)
++        super.onCreate(savedInstanceState)
++        setContent {
++            var theme by rememberSaveable { mutableStateOf(ObscurantThemes.savedName(this)) }
++            val palette = obscurantPalettes.firstOrNull { it.name == theme }
++            val base = if (palette?.isLight == true) acornLightColorScheme() else acornDarkColorScheme()
++            val scheme = palette?.let { ObscurantThemes.apply(base, it) } ?: base
++
++            MaterialTheme(colorScheme = scheme) {
++                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
++                    var introDone by rememberSaveable { mutableStateOf(false) }
++                    if (introDone) {
++                        SetupPage(
++                            theme = theme,
++                            onTheme = { theme = it },
++                            onMakeDefault = ::askToBeDefault,
++                            onStart = { lean -> finishSetup(theme, lean) },
++                        )
++                    } else {
++                        Intro { introDone = true }
++                    }
++                }
++            }
++        }
++    }
++
++    private fun askToBeDefault() {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
++            val roles = getSystemService(RoleManager::class.java)
++            if (roles.isRoleAvailable(RoleManager.ROLE_BROWSER) && !roles.isRoleHeld(RoleManager.ROLE_BROWSER)) {
++                roleRequest.launch(roles.createRequestRoleIntent(RoleManager.ROLE_BROWSER))
++                return
++            }
++        }
++        startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
++    }
++
++    private fun finishSetup(theme: String, lean: Boolean) {
++        ObscurantThemes.save(this, theme)
++        PreferenceManager.getDefaultSharedPreferences(applicationContext)
++            .edit().putBoolean(DONE_PREF, true).putBoolean(LEAN_PREF, lean).apply()
++        applyMemoryMode(lean)
++        startActivity(
++            Intent(this, HomeActivity::class.java)
++                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
++        )
++        finish()
++    }
++
++    @OptIn(ExperimentalAndroidComponentsApi::class)
++    private fun applyMemoryMode(lean: Boolean) {
++        val runtime = components.core.engine as? BrowserPreferencesRuntime ?: return
++        val values = if (lean) LEAN_VALUES else BALANCED_VALUES
++        values.forEach { (name, value) ->
++            runtime.setBrowserPref(name, value, Branch.USER, {}) {
++                Logger("ObscurantSetup").error("could not set $name", it)
++            }
++        }
++    }
++
++    companion object {
++        private val LEAN_VALUES = mapOf(
++            "image.mem.surfacecache.max_size_kb" to 262144,
++            "image.mem.surfacecache.min_expiration_ms" to 15000,
++            "media.memory_caches_combined_limit_kb" to 131072,
++            "browser.cache.memory.capacity" to 32768,
++            "browser.sessionhistory.max_entries" to 20,
++        )
++        private val BALANCED_VALUES = mapOf(
++            "image.mem.surfacecache.max_size_kb" to 1048576,
++            "image.mem.surfacecache.min_expiration_ms" to 60000,
++            "media.memory_caches_combined_limit_kb" to 524288,
++            "browser.cache.memory.capacity" to -1,
++            "browser.sessionhistory.max_entries" to 50,
++        )
++
++        /** True on a normal launch from the app icon until setup has been finished once. */
++        fun shouldShow(context: Context, intent: Intent?): Boolean =
++            intent?.action == Intent.ACTION_MAIN &&
++                !PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++                    .getBoolean(DONE_PREF, false)
++    }
++}
++
++@Composable
++private fun Intro(onDone: () -> Unit) {
++    val appear = remember { Animatable(0f) }
++    val bar = remember { Animatable(0f) }
++    LaunchedEffect(Unit) {
++        appear.animateTo(1f, tween(FADE_MS))
++        bar.animateTo(1f, tween(INTRO_MS))
++        onDone()
++    }
++    Column(
++        modifier = Modifier.fillMaxSize().clickable(onClick = onDone).padding(32.dp),
++        verticalArrangement = Arrangement.Center,
++        horizontalAlignment = Alignment.CenterHorizontally,
++    ) {
++        Image(
++            painter = painterResource(R.drawable.obscurant_launcher_fg),
++            contentDescription = null,
++            modifier = Modifier.size(200.dp).alpha(appear.value)
++                .scale(START_SCALE + (1f - START_SCALE) * appear.value),
++        )
++        Text(
++            text = "Obscurant",
++            fontSize = 40.sp,
++            fontWeight = FontWeight.Bold,
++            letterSpacing = 3.sp,
++            color = MaterialTheme.colorScheme.onBackground,
++            modifier = Modifier.alpha(appear.value),
++        )
++        Spacer(Modifier.height(24.dp))
++        LinearProgressIndicator(progress = { bar.value }, modifier = Modifier.width(220.dp))
++        Spacer(Modifier.height(24.dp))
++        Text(text = "Private. Light. Yours.", color = MaterialTheme.colorScheme.onSurfaceVariant)
++    }
++}
++
++@Composable
++private fun SetupPage(
++    theme: String,
++    onTheme: (String) -> Unit,
++    onMakeDefault: () -> Unit,
++    onStart: (Boolean) -> Unit,
++) {
++    var lean by rememberSaveable { mutableStateOf(true) }
++    val names = remember { listOf(OBSCURANT_DEFAULT_THEME) + obscurantPalettes.map { it.name } }
++
++    Column(modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(20.dp)) {
++        Text(
++            text = "Pick a look",
++            fontSize = 26.sp,
++            fontWeight = FontWeight.Bold,
++            color = MaterialTheme.colorScheme.onBackground,
++        )
++        Spacer(Modifier.height(12.dp))
++        LazyVerticalGrid(
++            columns = GridCells.Fixed(3),
++            modifier = Modifier.fillMaxWidth().weight(1f),
++            horizontalArrangement = Arrangement.spacedBy(10.dp),
++            verticalArrangement = Arrangement.spacedBy(10.dp),
++        ) {
++            items(names) { name -> ThemeTile(name, name == theme) { onTheme(name) } }
++        }
++        Spacer(Modifier.height(16.dp))
++        Row(verticalAlignment = Alignment.CenterVertically) {
++            Text("Memory", color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.weight(1f))
++            Choice("Balanced", !lean) { lean = false }
++            Spacer(Modifier.width(8.dp))
++            Choice("Lean", lean) { lean = true }
++        }
++        Spacer(Modifier.height(10.dp))
++        OutlinedButton(onClick = onMakeDefault, modifier = Modifier.fillMaxWidth()) {
++            Text("Make Obscurant my browser")
++        }
++        Spacer(Modifier.height(8.dp))
++        Button(onClick = { onStart(lean) }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
++            Text("Start browsing", fontWeight = FontWeight.Bold)
++        }
++        Text(
++            text = "Everything here can be changed later in Settings.",
++            fontSize = 12.sp,
++            textAlign = TextAlign.Center,
++            color = MaterialTheme.colorScheme.onSurfaceVariant,
++            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
++        )
++    }
++}
++
++@Composable
++private fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
++    if (selected) {
++        Button(onClick = onClick) { Text(label) }
++    } else {
++        OutlinedButton(onClick = onClick) { Text(label) }
++    }
++}
++
++@Composable
++private fun ThemeTile(name: String, selected: Boolean, onClick: () -> Unit) {
++    val palette = obscurantPalettes.firstOrNull { it.name == name }
++    val fill = Color(palette?.toolbar ?: 0xFF10131A)
++    val text = Color(palette?.text ?: 0xFFE8EAF2)
++    val accent = Color(palette?.accent ?: 0xFF7AA2FF)
++    Column(
++        modifier = Modifier
++            .background(fill, RoundedCornerShape(14.dp))
++            .border(
++                width = if (selected) 3.dp else 1.dp,
++                color = if (selected) accent else accent.copy(alpha = 0.35f),
++                shape = RoundedCornerShape(14.dp),
++            )
++            .clickable(onClick = onClick)
++            .padding(10.dp),
++        horizontalAlignment = Alignment.CenterHorizontally,
++    ) {
++        Box(Modifier.size(22.dp).background(accent, CircleShape))
++        Spacer(Modifier.height(6.dp))
++        Text(text = name, color = text, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
++    }
++}
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/Components.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/Components.kt
 @@ -246,15 +246,8 @@
@@ -3410,6 +3749,212 @@
 +    @Suppress("UNUSED_PARAMETER")
 +    fun isContentRecommendationsFeatureEnabled(context: Context): Boolean = false
  }
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/home/ui/Homepage.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/home/ui/Homepage.kt
+@@ -159,56 +159,26 @@
+                 )
+             }
+ 
+-            when (val headerState = state.headerState) {
+-                is HeaderState.Experimental.Normal -> {
+-                    val settings = components.settings
+-                    val shouldDisplaySportsLogo =
+-                        settings.enableHomepageSportsWidget && settings.showHomepageSportsWidget &&
+-                            !hasWorldCupEnded()
+-
+-                    ExperimentalHomepageHeader(
+-                        wordmarkTextColor = headerState.wordmarkTextColor,
+-                        showStoriesButton = headerState.showStoriesButton,
+-                        showButtonAnimation = headerState.showButtonAnimation,
+-                        isSportsWidgetEnabled = shouldDisplaySportsLogo,
+-                        onPrivateModeTapped = { browsingModeChanged(BrowsingMode.Private) },
+-                        onStoriesTapped = { interactor.onDiscoverMoreClicked() },
+-                        onNewsAnimationShown = { settings.recordNewsButtonAnimationShown() },
+-                        onLogoClicked = {
+-                            if (settings.showHomepageSportsWidget) {
+-                                interactor.onCountrySelectorShown(CountrySelectorSource.SPORTS_LOGO)
+-                                showSportsCountrySelector = true
+-                            }
+-                        },
+-                    )
+-                }
+-
+-                is HeaderState.Experimental.Private -> {
+-                    ExperimentalPrivateHomepageHeader(
+-                        onHomeTapped = { browsingModeChanged(BrowsingMode.Normal) },
+-                    )
+-                }
+-
+-                is HeaderState.Normal -> {
+-                    val settings = components.settings
+-                    val shouldDisplaySportsLogo =
+-                        settings.enableHomepageSportsWidget && settings.showHomepageSportsWidget &&
+-                            !hasWorldCupEnded()
+-
++            if (state.headerState is HeaderState.Experimental.Private) {
++                ExperimentalPrivateHomepageHeader(
++                    onHomeTapped = { browsingModeChanged(BrowsingMode.Normal) },
++                )
++            } else if (state is HomepageState.Private) {
++                (state.headerState as? HeaderState.Normal)?.let { headerState ->
+                     HomepageHeader(
+                         wordmarkTextColor = headerState.wordmarkTextColor,
+                         privateBrowsingButtonColor = headerState.privateBrowsingButtonColor,
+                         browsingMode = state.browsingMode,
+                         browsingModeChanged = browsingModeChanged,
+-                        isSportsWidgetEnabled = shouldDisplaySportsLogo,
+-                        onLogoClicked = {
+-                            if (settings.showHomepageSportsWidget) {
+-                                interactor.onCountrySelectorShown(CountrySelectorSource.SPORTS_LOGO)
+-                                showSportsCountrySelector = true
+-                            }
+-                        },
++                        isSportsWidgetEnabled = false,
++                        onLogoClicked = {},
+                     )
+                 }
++            } else {
++                ObscurantHomeHeader(
++                    onSearch = interactor::onNavigateSearch,
++                    onPrivateMode = { browsingModeChanged(BrowsingMode.Private) },
++                )
+             }
+ 
+             if (state.firstFrameDrawn) {
+@@ -260,8 +230,8 @@
+                                     onPrivacyReportTapped = interactor::onPrivacyReportTapped,
+                                     onLongfoxEntryPointClicked = interactor::onLongfoxEntryPointClicked,
+                                     modifier = Modifier.padding(top = 16.dp),
+-                                    longfoxEnabled = longfoxEnabled,
+-                                    showLongfoxAnimation = showLongfoxAnimation,
++                                    longfoxEnabled = false,
++                                    showLongfoxAnimation = false,
+                                 )
+                             }
+ 
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/home/ui/ObscurantHomeHeader.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/home/ui/ObscurantHomeHeader.kt
+@@ -0,0 +1,120 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.home.ui
++
++import android.app.Activity
++import android.text.format.DateFormat
++import androidx.compose.foundation.Image
++import androidx.compose.foundation.border
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material3.Icon
++import androidx.compose.material3.IconButton
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Surface
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.produceState
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.res.painterResource
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import kotlinx.coroutines.delay
++import org.mozilla.fenix.R
++import org.mozilla.fenix.theme.ObscurantThemes
++import java.util.Date
++import mozilla.components.ui.icons.R as iconsR
++
++private const val CLOCK_REFRESH_MS = 5_000L
++
++/** The Obscurant new tab page header: clock, logo, name and a private search field. */
++@Composable
++internal fun ObscurantHomeHeader(
++    onSearch: () -> Unit,
++    onPrivateMode: () -> Unit,
++) {
++    val context = LocalContext.current
++    val time by produceState(initialValue = DateFormat.getTimeFormat(context).format(Date())) {
++        while (true) {
++            value = DateFormat.getTimeFormat(context).format(Date())
++            delay(CLOCK_REFRESH_MS)
++        }
++    }
++
++    Column(
++        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
++        horizontalAlignment = Alignment.CenterHorizontally,
++    ) {
++        Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
++            IconButton(onClick = { (context as? Activity)?.let { ObscurantThemes.showChooser(it) } }) {
++                Icon(
++                    painter = painterResource(iconsR.drawable.mozac_ic_themes_24),
++                    contentDescription = "Obscurant themes",
++                    tint = MaterialTheme.colorScheme.onSurface,
++                )
++            }
++            IconButton(onClick = onPrivateMode) {
++                Icon(
++                    painter = painterResource(iconsR.drawable.mozac_ic_private_mode_24),
++                    contentDescription = "Private browsing",
++                    tint = MaterialTheme.colorScheme.onSurface,
++                )
++            }
++        }
++        Text(
++            text = time,
++            fontSize = 44.sp,
++            fontWeight = FontWeight.Light,
++            color = MaterialTheme.colorScheme.onSurface,
++        )
++        Spacer(Modifier.height(12.dp))
++        Image(
++            painter = painterResource(R.drawable.obscurant_launcher_fg),
++            contentDescription = null,
++            modifier = Modifier.size(132.dp),
++        )
++        Text(
++            text = "Obscurant",
++            fontSize = 30.sp,
++            fontWeight = FontWeight.Bold,
++            letterSpacing = 1.sp,
++            color = MaterialTheme.colorScheme.onSurface,
++        )
++        Spacer(Modifier.height(20.dp))
++        Surface(
++            modifier = Modifier
++                .fillMaxWidth()
++                .height(52.dp)
++                .border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(26.dp))
++                .clickable(onClick = onSearch),
++            shape = RoundedCornerShape(26.dp),
++            color = MaterialTheme.colorScheme.surfaceContainerHigh,
++        ) {
++            Row(modifier = Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
++                Icon(
++                    painter = painterResource(iconsR.drawable.mozac_ic_search_24),
++                    contentDescription = null,
++                    tint = MaterialTheme.colorScheme.primary,
++                )
++                Spacer(Modifier.width(12.dp))
++                Text(text = "Search privately", color = MaterialTheme.colorScheme.onSurfaceVariant)
++            }
++        }
++        Spacer(Modifier.height(8.dp))
++    }
++}
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/SettingsFragment.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/SettingsFragment.kt
 @@ -191,7 +191,7 @@
@@ -3439,10 +3984,15 @@
      }
  
      override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-@@ -552,6 +563,16 @@
+@@ -552,6 +563,21 @@
                  null
              }
  
++            "pref_key_obscurant_themes" -> {
++                org.mozilla.fenix.theme.ObscurantThemes.showChooser(requireActivity())
++                null
++            }
++
 +            "pref_key_obscurant_sponsorblock" -> {
 +                openInNewTab("https://addons.mozilla.org/firefox/addon/sponsorblock/")
 +                null
@@ -3456,6 +4006,478 @@
              resources.getString(R.string.pref_key_about) -> {
                  SettingsFragmentDirections.actionSettingsFragmentToAboutFragment()
              }
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/trustpanel/ui/ObscurantShields.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/trustpanel/ui/ObscurantShields.kt
+@@ -0,0 +1,116 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.settings.trustpanel.ui
++
++import android.content.Context
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.selection.toggleable
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Switch
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.semantics.Role
++import androidx.compose.ui.unit.dp
++import androidx.preference.PreferenceManager
++import mozilla.components.ExperimentalAndroidComponentsApi
++import mozilla.components.concept.engine.preferences.Branch
++import mozilla.components.concept.engine.preferences.BrowserPreferencesRuntime
++import mozilla.components.support.base.log.logger.Logger
++import org.mozilla.fenix.components.menu.compose.MenuGroup
++import org.mozilla.fenix.ext.components
++
++private const val ENGINES = "privacy.trackingprotection.content.protection.engines"
++private const val ENGINES_PRIVATE = "privacy.trackingprotection.content.protection.engines.pbmode"
++private const val ADS_ENGINE = "test_block"
++private const val PHISHING_ENGINE = "test_phish"
++private const val ADS_KEY = "obscurant_shield_ads"
++private const val PHISHING_KEY = "obscurant_shield_phishing"
++private const val FINGERPRINT_KEY = "obscurant_shield_fingerprint"
++private const val GPC_KEY = "obscurant_shield_gpc"
++
++@OptIn(ExperimentalAndroidComponentsApi::class)
++private fun setEnginePref(context: Context, name: String, text: String? = null, flag: Boolean? = null) {
++    val runtime = context.components.core.engine as? BrowserPreferencesRuntime ?: return
++    val failed: (Throwable) -> Unit = { Logger("ObscurantShields").error("could not set $name", it) }
++    if (text != null) {
++        runtime.setBrowserPref(name, text, Branch.USER, {}, failed)
++    } else if (flag != null) {
++        runtime.setBrowserPref(name, flag, Branch.USER, {}, failed)
++    }
++}
++
++private fun applyBlocker(context: Context, ads: Boolean, phishing: Boolean) {
++    val engines = listOfNotNull(ADS_ENGINE.takeIf { ads }, PHISHING_ENGINE.takeIf { phishing }).joinToString(",")
++    setEnginePref(context, ENGINES, text = engines)
++    setEnginePref(context, ENGINES_PRIVATE, text = engines)
++}
++
++/** The Obscurant shield switches shown in the site panel. These apply to every site. */
++@Composable
++internal fun ObscurantShieldsGroup() {
++    val context = LocalContext.current
++    val prefs = remember { PreferenceManager.getDefaultSharedPreferences(context.applicationContext) }
++    var ads by remember { mutableStateOf(prefs.getBoolean(ADS_KEY, true)) }
++    var phishing by remember { mutableStateOf(prefs.getBoolean(PHISHING_KEY, true)) }
++    var fingerprint by remember { mutableStateOf(prefs.getBoolean(FINGERPRINT_KEY, true)) }
++    var privacySignal by remember { mutableStateOf(prefs.getBoolean(GPC_KEY, true)) }
++
++    MenuGroup {
++        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
++            Text(
++                text = "Obscurant Shields (all sites)",
++                style = MaterialTheme.typography.titleSmall,
++                color = MaterialTheme.colorScheme.primary,
++                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
++            )
++            ShieldSwitch("Block ads and trackers", ads) {
++                ads = it
++                prefs.edit().putBoolean(ADS_KEY, it).apply()
++                applyBlocker(context, it, phishing)
++            }
++            ShieldSwitch("Block phishing sites", phishing) {
++                phishing = it
++                prefs.edit().putBoolean(PHISHING_KEY, it).apply()
++                applyBlocker(context, ads, it)
++            }
++            ShieldSwitch("Resist fingerprinting", fingerprint) {
++                fingerprint = it
++                prefs.edit().putBoolean(FINGERPRINT_KEY, it).apply()
++                setEnginePref(context, "privacy.fingerprintingProtection", flag = it)
++            }
++            ShieldSwitch("Ask sites not to sell my data", privacySignal) {
++                privacySignal = it
++                prefs.edit().putBoolean(GPC_KEY, it).apply()
++                setEnginePref(context, "privacy.globalprivacycontrol.enabled", flag = it)
++            }
++        }
++    }
++}
++
++@Composable
++private fun ShieldSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
++    Row(
++        modifier = Modifier
++            .fillMaxWidth()
++            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
++            .padding(horizontal = 16.dp, vertical = 6.dp),
++        horizontalArrangement = Arrangement.SpaceBetween,
++        verticalAlignment = Alignment.CenterVertically,
++    ) {
++        Text(text = label, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
++        Switch(checked = checked, onCheckedChange = null)
++    }
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/trustpanel/ui/ProtectionPanel.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/settings/trustpanel/ui/ProtectionPanel.kt
+@@ -139,6 +139,10 @@
+             onTrackingProtectionToggleClick = onTrackingProtectionToggleClick,
+         )
+ 
++        if (!isLocalPdf) {
++            ObscurantShieldsGroup()
++        }
++
+         IPProtectionMenuGroup(
+             visible = showIPProtection,
+             ipProtectionMenuState = ipProtectionMenuState,
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/termsofuse/store/PrivacyNoticeBannerRepository.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/termsofuse/store/PrivacyNoticeBannerRepository.kt
+@@ -32,14 +32,6 @@
+         settings.privacyNoticeBannerLastDisplayedTimeInMillis = nowMillis
+     }
+ 
+-    override fun shouldShowPrivacyNoticeBanner(): Boolean {
+-        val termsOfUseTime = if (settings.isTermsOfUsePublishedDebugDateEnabled) {
+-            System.currentTimeMillis()
+-        } else {
+-            TOU_TIME_IN_MILLIS
+-        }
+-        return settings.hasAcceptedTermsOfService &&
+-                settings.termsOfUseAcceptedTimeInMillis < termsOfUseTime &&
+-                settings.privacyNoticeBannerLastDisplayedTimeInMillis < termsOfUseTime
+-    }
++    // Obscurant: Mozilla's notices do not apply to this app.
++    override fun shouldShowPrivacyNoticeBanner(): Boolean = false
+ }
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/theme/FirefoxTheme.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/theme/FirefoxTheme.kt
+@@ -4,6 +4,7 @@
+ 
+ package org.mozilla.fenix.theme
+ 
++import androidx.compose.ui.platform.LocalContext
+ import androidx.compose.material3.ColorScheme
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.CompositionLocalProvider
+@@ -41,12 +42,15 @@
+         Theme.Private -> privateColorPalette
+     }
+ 
+-    val colorScheme: ColorScheme = when (theme) {
++    val baseColorScheme: ColorScheme = when (theme) {
+         Theme.Light -> acornLightColorScheme()
+         Theme.Dark -> acornDarkColorScheme()
+         Theme.Private -> acornPrivateColorScheme()
+     }
+ 
++    val obscurant = if (theme == Theme.Private) null else ObscurantThemes.current(LocalContext.current)
++    val colorScheme = obscurant?.let { ObscurantThemes.apply(baseColorScheme, it) } ?: baseColorScheme
++
+     val gradients: AcornGradientScheme = when (theme) {
+         Theme.Light -> lightAcornGradientScheme
+         Theme.Dark -> darkAcornGradientScheme
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/theme/ObscurantPalettes.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/theme/ObscurantPalettes.kt
+@@ -0,0 +1,54 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Generated by tools/make_android_themes.py. Do not edit.
++
++package org.mozilla.fenix.theme
++
++import org.mozilla.fenix.R
++
++internal val obscurantPalettes: List<ObscurantPalette> = listOf(
++    ObscurantPalette("BlackGlass", false, 0xFF121212, 0xFF1F1F1F, 0xFF343434, 0xFFEEEEEE, 0xFFCACACA, 0xFFFF5500, 0xFF000000, 0xFF572C17, 0xFF4E5050, R.style.ObscurantOverlay0),
++    ObscurantPalette("Utterly Nord", false, 0xFF242933, 0xFF2E3440, 0xFF3B4252, 0xFFECEFF4, 0xFFD8DEE9, 0xFF88C0D0, 0xFF000000, 0xFF445764, 0xFF4C566A, R.style.ObscurantOverlay1),
++    ObscurantPalette("Nord Light", true, 0xFFD8DEE9, 0xFFE5E9F0, 0xFFECEFF4, 0xFF2E3440, 0xFF4C566A, 0xFF5E81AC, 0xFF000000, 0xFFC3CFDF, 0xFFB8C0D0, R.style.ObscurantOverlay2),
++    ObscurantPalette("Dracula", false, 0xFF21222C, 0xFF282A36, 0xFF44475A, 0xFFF8F8F2, 0xFFB6B8C8, 0xFFBD93F9, 0xFF000000, 0xFF4D4467, 0xFF44475A, R.style.ObscurantOverlay3),
++    ObscurantPalette("Gruvbox Dark", false, 0xFF1D2021, 0xFF282828, 0xFF3C3836, 0xFFEBDBB2, 0xFFA89984, 0xFFFABD2F, 0xFF000000, 0xFF5C4D2A, 0xFF504945, R.style.ObscurantOverlay4),
++    ObscurantPalette("Gruvbox Light", true, 0xFFEBDBB2, 0xFFFBF1C7, 0xFFF2E5BC, 0xFF3C3836, 0xFF665C54, 0xFFD65D0E, 0xFFFFFFFF, 0xFFF2CC99, 0xFFD5C4A1, R.style.ObscurantOverlay5),
++    ObscurantPalette("Solarized Dark", false, 0xFF00212B, 0xFF002B36, 0xFF073642, 0xFF93A1A1, 0xFF839496, 0xFFB58900, 0xFF000000, 0xFF2D4228, 0xFF0B4350, R.style.ObscurantOverlay6),
++    ObscurantPalette("Solarized Light", true, 0xFFEEE8D5, 0xFFFDF6E3, 0xFFEEE8D5, 0xFF586E75, 0xFF657B83, 0xFF268BD2, 0xFF000000, 0xFFC7DBDF, 0xFFD6CFB8, R.style.ObscurantOverlay7),
++    ObscurantPalette("Catppuccin Mocha", false, 0xFF11111B, 0xFF1E1E2E, 0xFF313244, 0xFFCDD6F4, 0xFFA6ADC8, 0xFFCBA6F7, 0xFF000000, 0xFF494060, 0xFF45475A, R.style.ObscurantOverlay8),
++    ObscurantPalette("Catppuccin Macchiato", false, 0xFF181926, 0xFF24273A, 0xFF363A4F, 0xFFCAD3F5, 0xFFA5ADCB, 0xFFC6A0F6, 0xFF000000, 0xFF4C4569, 0xFF494D64, R.style.ObscurantOverlay9),
++    ObscurantPalette("Catppuccin Frappe", false, 0xFF232634, 0xFF303446, 0xFF414559, 0xFFC6D0F5, 0xFFA5ADCE, 0xFFCA9EE6, 0xFF000000, 0xFF564E6E, 0xFF51576D, R.style.ObscurantOverlay10),
++    ObscurantPalette("Catppuccin Latte", true, 0xFFDCE0E8, 0xFFEFF1F5, 0xFFE6E9EF, 0xFF4C4F69, 0xFF6C6F85, 0xFF8839EF, 0xFFFFFFFF, 0xFFD5C3F4, 0xFFCCD0DA, R.style.ObscurantOverlay11),
++    ObscurantPalette("Tokyo Night", false, 0xFF16161E, 0xFF1A1B26, 0xFF24283B, 0xFFC0CAF5, 0xFFA9B1D6, 0xFF7AA2F7, 0xFF000000, 0xFF323D5A, 0xFF3B4261, R.style.ObscurantOverlay12),
++    ObscurantPalette("One Dark", false, 0xFF21252B, 0xFF282C34, 0xFF2C313A, 0xFFABB2BF, 0xFF828997, 0xFF61AFEF, 0xFF000000, 0xFF364D63, 0xFF3E4451, R.style.ObscurantOverlay13),
++    ObscurantPalette("Rose Pine", false, 0xFF16141F, 0xFF191724, 0xFF26233A, 0xFFE0DEF4, 0xFF908CAA, 0xFFC4A7E7, 0xFF000000, 0xFF443B55, 0xFF403D52, R.style.ObscurantOverlay14),
++    ObscurantPalette("Rose Pine Dawn", true, 0xFFF2E9E1, 0xFFFAF4ED, 0xFFFFFAF3, 0xFF575279, 0xFF797593, 0xFFD7827E, 0xFF000000, 0xFFF1D8D1, 0xFFDFDAD9, R.style.ObscurantOverlay15),
++    ObscurantPalette("Monokai", false, 0xFF1E1F1C, 0xFF272822, 0xFF3E3D32, 0xFFF8F8F2, 0xFFCFCFC2, 0xFFA6E22E, 0xFF000000, 0xFF475625, 0xFF49483E, R.style.ObscurantOverlay16),
++    ObscurantPalette("Everforest Dark", false, 0xFF232A2E, 0xFF2D353B, 0xFF343F44, 0xFFD3C6AA, 0xFF9DA9A0, 0xFFA7C080, 0xFF000000, 0xFF4C584C, 0xFF475258, R.style.ObscurantOverlay17),
++    ObscurantPalette("Kanagawa", false, 0xFF16161D, 0xFF1F1F28, 0xFF2A2A37, 0xFFDCD7BA, 0xFFC8C093, 0xFF7E9CD8, 0xFF000000, 0xFF373E54, 0xFF363646, R.style.ObscurantOverlay18),
++    ObscurantPalette("Ayu Dark", false, 0xFF090D13, 0xFF0B0E14, 0xFF131721, 0xFFBFBDB6, 0xFFACB6BF, 0xFFE6B450, 0xFF000000, 0xFF423823, 0xFF1F2430, R.style.ObscurantOverlay19),
++    ObscurantPalette("Ayu Mirage", false, 0xFF171B24, 0xFF1F2430, 0xFF272D38, 0xFFCCCAC2, 0xFFA0A3A8, 0xFFFFCC66, 0xFF000000, 0xFF574E3E, 0xFF343B4D, R.style.ObscurantOverlay20),
++    ObscurantPalette("Ayu Light", true, 0xFFE7E8E9, 0xFFFCFCFC, 0xFFF0F0F0, 0xFF5C6166, 0xFF787B80, 0xFFFF9940, 0xFF000000, 0xFFFDE3CD, 0xFFD9D8D7, R.style.ObscurantOverlay21),
++    ObscurantPalette("Material Ocean", false, 0xFF090B10, 0xFF0F111A, 0xFF1A1C25, 0xFFA6ACCD, 0xFF8F93A2, 0xFF84FFFF, 0xFF000000, 0xFF2C4C53, 0xFF292D3E, R.style.ObscurantOverlay22),
++    ObscurantPalette("Oceanic", false, 0xFF162229, 0xFF1B2B34, 0xFF343D46, 0xFFD8DEE9, 0xFFA7ADBA, 0xFF6699CC, 0xFF000000, 0xFF2E465A, 0xFF4F5B66, R.style.ObscurantOverlay23),
++    ObscurantPalette("Midnight Blue", false, 0xFF070B19, 0xFF0D1330, 0xFF18214A, 0xFFE6ECFF, 0xFFA9B4E0, 0xFF5B8CFF, 0xFF000000, 0xFF203164, 0xFF26306A, R.style.ObscurantOverlay24),
++    ObscurantPalette("Terminal Green", false, 0xFF000000, 0xFF050A05, 0xFF0D1A0D, 0xFF33FF66, 0xFF29CC52, 0xFF66FF99, 0xFF000000, 0xFF1D472A, 0xFF145214, R.style.ObscurantOverlay25),
++    ObscurantPalette("Amber CRT", false, 0xFF0A0600, 0xFF120B00, 0xFF1F1400, 0xFFFFB000, 0xFFCC8D00, 0xFFFFD166, 0xFF000000, 0xFF4D3C1A, 0xFF4A3000, R.style.ObscurantOverlay26),
++    ObscurantPalette("Cyberpunk", false, 0xFF0D0221, 0xFF150535, 0xFF240B50, 0xFFF3E9FF, 0xFFC3A8FF, 0xFFFF2A6D, 0xFFFFFFFF, 0xFF500E43, 0xFF3B1A78, R.style.ObscurantOverlay27),
++    ObscurantPalette("Sunset", false, 0xFF1F1220, 0xFF2B1B2E, 0xFF3D2640, 0xFFFFE3CC, 0xFFE0B9A0, 0xFFFF7A59, 0xFF000000, 0xFF603339, 0xFF5A3A5E, R.style.ObscurantOverlay28),
++    ObscurantPalette("Deep Forest", false, 0xFF0B1510, 0xFF112018, 0xFF1B3326, 0xFFDFF5E6, 0xFFA9CDB5, 0xFF6FCF97, 0xFF000000, 0xFF284C38, 0xFF285038, R.style.ObscurantOverlay29),
++    ObscurantPalette("Ocean Deep", false, 0xFF04141C, 0xFF082230, 0xFF0F3347, 0xFFD6F0FF, 0xFF9CC7DF, 0xFF2BB3D6, 0xFF000000, 0xFF11465A, 0xFF1B516B, R.style.ObscurantOverlay30),
++    ObscurantPalette("Crimson Night", false, 0xFF140608, 0xFF1D0A0E, 0xFF2E1117, 0xFFFFE5E8, 0xFFD9A6AD, 0xFFE63946, 0xFFFFFFFF, 0xFF4F161C, 0xFF4A1C25, R.style.ObscurantOverlay31),
++    ObscurantPalette("Lavender Dusk", false, 0xFF17142A, 0xFF1F1B38, 0xFF2D2850, 0xFFEAE6FF, 0xFFB9B0E8, 0xFF9D8CFF, 0xFF000000, 0xFF3E376A, 0xFF433C7A, R.style.ObscurantOverlay32),
++    ObscurantPalette("Graphite", false, 0xFF1A1A1A, 0xFF242424, 0xFF303030, 0xFFE6E6E6, 0xFFB0B0B0, 0xFF9E9E9E, 0xFF000000, 0xFF424242, 0xFF3D3D3D, R.style.ObscurantOverlay33),
++    ObscurantPalette("High Contrast Dark", false, 0xFF000000, 0xFF000000, 0xFF1A1A1A, 0xFFFFFFFF, 0xFFE0E0E0, 0xFFFFFF00, 0xFF000000, 0xFF404000, 0xFFFFFFFF, R.style.ObscurantOverlay34),
++    ObscurantPalette("High Contrast Light", true, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFF0F0F0, 0xFF000000, 0xFF202020, 0xFF0000EE, 0xFFFFFFFF, 0xFFBFBFFB, 0xFF000000, R.style.ObscurantOverlay35),
++    ObscurantPalette("Paper", true, 0xFFE9E6DF, 0xFFF6F4EE, 0xFFFFFFFF, 0xFF2B2B2B, 0xFF5C5C5C, 0xFFB5543A, 0xFFFFFFFF, 0xFFE6CCC1, 0xFFD6D2C8, R.style.ObscurantOverlay36),
++    ObscurantPalette("Sepia", true, 0xFFE6D9BD, 0xFFF4ECD8, 0xFFFBF5E6, 0xFF5B4636, 0xFF7D6551, 0xFFA0522D, 0xFFFFFFFF, 0xFFDFC6AD, 0xFFD3C4A2, R.style.ObscurantOverlay37),
++    ObscurantPalette("Mint", true, 0xFFD8EFE3, 0xFFEAF8F1, 0xFFFFFFFF, 0xFF1D3B2F, 0xFF46695A, 0xFF2E9E6F, 0xFF000000, 0xFFBBE2D0, 0xFFBFE0D0, R.style.ObscurantOverlay38),
++    ObscurantPalette("Rose Quartz", true, 0xFFF2D9DF, 0xFFFBEAEE, 0xFFFFFFFF, 0xFF4A2631, 0xFF774F5B, 0xFFD6527A, 0xFFFFFFFF, 0xFFF2C4D1, 0xFFE6C4CC, R.style.ObscurantOverlay39),
++    ObscurantPalette("Sky", true, 0xFFD6E8FA, 0xFFE9F3FD, 0xFFFFFFFF, 0xFF14304D, 0xFF48688A, 0xFF2F80ED, 0xFF000000, 0xFFBAD6F9, 0xFFBCD3EA, R.style.ObscurantOverlay40),
++    ObscurantPalette("Lemon", true, 0xFFF6EFC2, 0xFFFCF8DC, 0xFFFFFFFF, 0xFF3D3A1B, 0xFF66622F, 0xFFC9A800, 0xFF000000, 0xFFEFE4A5, 0xFFE5DC9C, R.style.ObscurantOverlay41),
++)
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/theme/ObscurantThemes.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/theme/ObscurantThemes.kt
+@@ -0,0 +1,144 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.theme
++
++import android.app.Activity
++import android.content.Context
++import android.graphics.drawable.GradientDrawable
++import android.view.View
++import android.view.ViewGroup
++import android.widget.ArrayAdapter
++import android.widget.TextView
++import androidx.annotation.StyleRes
++import androidx.appcompat.app.AlertDialog
++import androidx.appcompat.app.AppCompatDelegate
++import androidx.compose.material3.ColorScheme
++import androidx.compose.ui.graphics.Color
++import androidx.preference.PreferenceManager
++import org.mozilla.fenix.ext.components
++
++/** One desktop Obscurant theme, as used by the Android app. */
++internal data class ObscurantPalette(
++    val name: String,
++    val isLight: Boolean,
++    val frame: Long,
++    val toolbar: Long,
++    val field: Long,
++    val text: Long,
++    val subtext: Long,
++    val accent: Long,
++    val onAccent: Long,
++    val soft: Long,
++    val border: Long,
++    @param:StyleRes val overlay: Int,
++)
++
++internal const val OBSCURANT_DEFAULT_THEME = "Obscurant"
++private const val THEME_PREF = "obscurant_theme_name"
++
++/** Reads, applies and lets the user pick an Obscurant theme. */
++object ObscurantThemes {
++    internal fun savedName(context: Context): String =
++        PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++            .getString(THEME_PREF, OBSCURANT_DEFAULT_THEME) ?: OBSCURANT_DEFAULT_THEME
++
++    internal fun current(context: Context): ObscurantPalette? {
++        val name = savedName(context)
++        return obscurantPalettes.firstOrNull { it.name == name }
++    }
++
++    internal fun apply(base: ColorScheme, p: ObscurantPalette): ColorScheme = base.copy(
++        primary = Color(p.accent),
++        onPrimary = Color(p.onAccent),
++        primaryContainer = Color(p.soft),
++        onPrimaryContainer = Color(p.text),
++        inversePrimary = Color(p.accent),
++        secondary = Color(p.subtext),
++        onSecondary = Color(p.frame),
++        secondaryContainer = Color(p.field),
++        onSecondaryContainer = Color(p.text),
++        tertiary = Color(p.accent),
++        onTertiary = Color(p.onAccent),
++        tertiaryContainer = Color(p.soft),
++        onTertiaryContainer = Color(p.text),
++        background = Color(p.frame),
++        onBackground = Color(p.text),
++        surface = Color(p.toolbar),
++        onSurface = Color(p.text),
++        surfaceVariant = Color(p.field),
++        onSurfaceVariant = Color(p.subtext),
++        surfaceTint = Color(p.accent),
++        outline = Color(p.border),
++        outlineVariant = Color(p.border),
++        surfaceBright = Color(p.field),
++        surfaceDim = Color(p.frame),
++        surfaceContainerLowest = Color(p.toolbar),
++        surfaceContainerLow = Color(p.toolbar),
++        surfaceContainer = Color(p.toolbar),
++        surfaceContainerHigh = Color(p.field),
++        surfaceContainerHighest = Color(p.field),
++    )
++
++    /** Recolors the older XML screens of [activity]. Call after the activity theme is set. */
++    fun applyOverlay(activity: Activity) {
++        current(activity)?.let { activity.theme.applyStyle(it.overlay, true) }
++    }
++
++    internal fun save(context: Context, name: String) {
++        PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++            .edit().putString(THEME_PREF, name).apply()
++        val light = obscurantPalettes.firstOrNull { it.name == name }?.isLight ?: false
++        val settings = context.components.settings
++        settings.shouldFollowDeviceTheme = false
++        settings.shouldUseLightTheme = light
++        settings.shouldUseDarkTheme = !light
++        AppCompatDelegate.setDefaultNightMode(
++            if (light) AppCompatDelegate.MODE_NIGHT_NO else AppCompatDelegate.MODE_NIGHT_YES,
++        )
++    }
++
++    private fun select(activity: Activity, name: String) {
++        save(activity, name)
++        activity.recreate()
++    }
++
++    /** Shows the list of themes with a color sample next to each. */
++    fun showChooser(activity: Activity) {
++        val names = listOf(OBSCURANT_DEFAULT_THEME) + obscurantPalettes.map { it.name }
++        val selected = savedName(activity)
++        val density = activity.resources.displayMetrics.density
++        val size = (SWATCH_DP * density).toInt()
++        val adapter = object : ArrayAdapter<String>(activity, android.R.layout.simple_list_item_1, names) {
++            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
++                val view = super.getView(position, convertView, parent) as TextView
++                val palette = obscurantPalettes.firstOrNull { it.name == names[position] }
++                val fill = palette?.toolbar ?: DEFAULT_FILL
++                val ring = palette?.accent ?: DEFAULT_RING
++                val dot = GradientDrawable().apply {
++                    shape = GradientDrawable.OVAL
++                    setColor(fill.toInt())
++                    setStroke((RING_DP * density).toInt(), ring.toInt())
++                    setSize(size, size)
++                }
++                dot.setBounds(0, 0, size, size)
++                view.setCompoundDrawables(dot, null, null, null)
++                view.compoundDrawablePadding = (PAD_DP * density).toInt()
++                view.text = if (names[position] == selected) "${names[position]}  \u2713" else names[position]
++                return view
++            }
++        }
++        AlertDialog.Builder(activity)
++            .setTitle("Obscurant themes")
++            .setAdapter(adapter) { _, which -> select(activity, names[which]) }
++            .setNegativeButton(android.R.string.cancel, null)
++            .show()
++    }
++
++    private const val SWATCH_DP = 24
++    private const val RING_DP = 4
++    private const val PAD_DP = 16
++    private const val DEFAULT_FILL = 0xFF10131A
++    private const val DEFAULT_RING = 0xFF7AA2FF
++}
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/theme/ThemeManager.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/theme/ThemeManager.kt
+@@ -79,6 +79,9 @@
+ 
+     fun setActivityTheme(activity: Activity) {
+         activity.setTheme(currentThemeResource)
++        if (currentThemeResource != R.style.PrivateTheme) {
++            ObscurantThemes.applyOverlay(activity)
++        }
+     }
+ 
+     companion object {
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/ObscurantGoogleContainer.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/ObscurantGoogleContainer.kt
+@@ -0,0 +1,75 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.utils
++
++import android.content.Context
++import android.net.Uri
++import android.os.SystemClock
++import android.widget.Toast
++import androidx.preference.PreferenceManager
++import mozilla.components.concept.engine.EngineSession
++import org.mozilla.fenix.ext.components
++
++/**
++ * Keeps Google signed in only inside its own container, the same way the desktop browser does: when the
++ * user opens a Google site from a normal tab, the page is opened in a tab with a separate cookie jar before
++ * anything is sent. Private tabs are left alone, and only user started navigations are moved.
++ */
++object ObscurantGoogleContainer {
++    const val ENABLED_PREF = "pref_key_obscurant_google_container"
++    private const val CONTEXT_ID = "obscurant_google"
++    private const val TOLD_PREF = "obscurant_google_container_told"
++    private const val WINDOW_MS = 10_000L
++    private const val MAX_MOVES = 3
++    private val domains = listOf(
++        "google.com",
++        "youtube.com",
++        "gstatic.com",
++        "googleusercontent.com",
++        "googleapis.com",
++        "ggpht.com",
++        "gmail.com",
++    )
++    private val recent = mutableMapOf<String, MutableList<Long>>()
++
++    private fun isGoogleUrl(url: String): Boolean {
++        val uri = Uri.parse(url)
++        val host = uri.host?.lowercase() ?: return false
++        return uri.scheme == "https" && domains.any { host == it || host.endsWith(".$it") }
++    }
++
++    /** Returns true when [url] was moved to the Google container and must not load in [engineSession]. */
++    fun move(context: Context, engineSession: EngineSession, url: String, userStarted: Boolean): Boolean {
++        val prefs = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
++        if (!userStarted || !isGoogleUrl(url) || !prefs.getBoolean(ENABLED_PREF, true)) {
++            return false
++        }
++        val store = context.components.core.store
++        val tab = store.state.tabs.firstOrNull { it.engineState.engineSession === engineSession }
++        if (tab == null || tab.content.private || tab.contextId == CONTEXT_ID) {
++            return false
++        }
++        val now = SystemClock.elapsedRealtime()
++        val moves = recent.getOrPut(tab.id) { mutableListOf() }
++        moves.removeAll { now - it > WINDOW_MS }
++        if (moves.size >= MAX_MOVES) {
++            return false
++        }
++        moves.add(now)
++
++        val selected = store.state.selectedTabId == tab.id
++        val blank = tab.content.url.isEmpty() || tab.content.url == "about:blank" || tab.content.url == url
++        val tabs = context.components.useCases.tabsUseCases
++        tabs.addTab(url = url, selectTab = selected, parentId = if (blank) null else tab.id, contextId = CONTEXT_ID)
++        if (blank) {
++            tabs.removeTab(tab.id)
++        }
++        if (!prefs.getBoolean(TOLD_PREF, false)) {
++            prefs.edit().putBoolean(TOLD_PREF, true).apply()
++            Toast.makeText(context, "Google opens in its own container", Toast.LENGTH_LONG).show()
++        }
++        return true
++    }
++}
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/ObscurantUpdate.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/ObscurantUpdate.kt
 @@ -0,0 +1,72 @@
@@ -3481,7 +4503,7 @@
 +object ObscurantUpdate {
 +    const val ENABLED_PREF = "pref_key_obscurant_update_check"
 +    private const val LAST_PREF = "obscurant_update_last_check"
-+    private const val BUILD = 4
++    private const val BUILD = 5
 +    private const val DAY_MS = 24L * 60 * 60 * 1000
 +    private const val TIMEOUT_MS = 12000
 +    private const val HTTP_OK = 200
@@ -3533,7 +4555,46 @@
 +}
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/Settings.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/Settings.kt
-@@ -615,15 +615,13 @@
+@@ -187,18 +187,16 @@
+     /**
+      * Indicates if the recent saved bookmarks functionality should be visible.
+      */
+-    var showBookmarksHomeFeature by booleanPreference(
+-        appContext.getPreferenceKey(R.string.pref_key_customization_bookmarks),
+-        default = { homescreenSections[HomeScreenSection.BOOKMARKS] == true },
+-    )
++    var showBookmarksHomeFeature: Boolean
++        get() = false
++        set(@Suppress("UNUSED_PARAMETER") value) = Unit
+ 
+     /**
+      * Indicates if the recent tabs functionality should be visible.
+      */
+-    var showRecentTabsFeature by booleanPreference(
+-        appContext.getPreferenceKey(R.string.pref_key_recent_tabs),
+-        default = { homescreenSections[HomeScreenSection.JUMP_BACK_IN] == true },
+-    )
++    var showRecentTabsFeature: Boolean
++        get() = false
++        set(@Suppress("UNUSED_PARAMETER") value) = Unit
+ 
+     /**
+      * Indicates if the stories homescreen section should be shown.
+@@ -241,10 +239,9 @@
+     /**
+      * Indicates whether or not the "Recently Visited" section should be shown on the home screen.
+      */
+-    var historyMetadataUIFeature by booleanPreference(
+-        appContext.getPreferenceKey(R.string.pref_key_history_metadata_feature),
+-        default = { homescreenSections[HomeScreenSection.RECENT_EXPLORATIONS] == true },
+-    )
++    var historyMetadataUIFeature: Boolean
++        get() = false
++        set(@Suppress("UNUSED_PARAMETER") value) = Unit
+ 
+     /**
+      * Indicates whether or not the "Synced Tabs" section should be shown on the home screen.
+@@ -615,15 +612,13 @@
          default = false,
      )
  
@@ -3556,7 +4617,21 @@
  
      var hasMadeMarketingTelemetrySelection by booleanPreference(
          appContext.getPreferenceKey(R.string.pref_key_marketing_telemetry_selection_made),
-@@ -748,10 +746,9 @@
+@@ -676,10 +671,9 @@
+     /**
+      * Returns true if the terms of use feature flag is enabled
+      */
+-    var isTermsOfUsePromptEnabled by booleanPreference(
+-        key = appContext.getPreferenceKey(R.string.pref_key_terms_prompt_enabled),
+-        default = { FxNimbus.features.termsOfUsePrompt.value().enabled },
+-    )
++    var isTermsOfUsePromptEnabled: Boolean
++        get() = false
++        set(@Suppress("UNUSED_PARAMETER") value) = Unit
+ 
+     /**
+      * Returns true if the nimbus flag for showing the terms of use drag handle is true.
+@@ -748,10 +742,9 @@
          persistDefaultIfNotExists = true,
      )
  
@@ -3570,7 +4645,7 @@
  
      /**
       * This lets us know if the user has disabled experimentation manually so that we know
-@@ -1157,7 +1154,7 @@
+@@ -1157,7 +1150,7 @@
  
      var shouldUseDarkTheme by booleanPreference(
          appContext.getPreferenceKey(R.string.pref_key_dark_theme),
@@ -3579,7 +4654,7 @@
      )
  
      var shouldFollowDeviceTheme by booleanPreference(
-@@ -2184,10 +2181,9 @@
+@@ -2184,10 +2177,9 @@
      /**
       * Indicates if the Contile functionality should be visible.
       */
@@ -3593,7 +4668,7 @@
  
      /**
       * Blocklist used to filter items from the home screen that have previously been removed.
-@@ -2291,10 +2287,9 @@
+@@ -2291,10 +2283,9 @@
      /**
       * Indicates whether or not to use remote server search configuration.
       */
@@ -3607,7 +4682,35 @@
  
      /**
       * Indicates if the menu CFR should be displayed to the user.
-@@ -2718,15 +2713,13 @@
+@@ -2488,10 +2479,9 @@
+     /**
+      * Indicates if Homepage Sports Widget is enabled.
+      */
+-    var enableHomepageSportsWidget by booleanPreference(
+-        key = appContext.getPreferenceKey(R.string.pref_key_enable_homepage_sports_widget),
+-        default = { FxNimbus.features.homepageSportsWidget.value().enabled },
+-    )
++    var enableHomepageSportsWidget: Boolean
++        get() = false
++        set(@Suppress("UNUSED_PARAMETER") value) = Unit
+ 
+     /**
+      * Nimbus override: when true, treat the user as being within one week of the World Cup
+@@ -2535,10 +2525,9 @@
+      * This is the user-controlled visibility toggle, independent of the
+      * [enableHomepageSportsWidget] feature flag.
+      */
+-    var showHomepageSportsWidget by booleanPreference(
+-        key = appContext.getPreferenceKey(R.string.pref_key_show_homepage_sports_widget),
+-        default = true,
+-    )
++    var showHomepageSportsWidget: Boolean
++        get() = false
++        set(@Suppress("UNUSED_PARAMETER") value) = Unit
+ 
+     /**
+      * Indicates if the Homepage Countdown Widget should be visible on the homepage.
+@@ -2718,15 +2707,13 @@
       * Nimbus controlled feature flag that Indicates if the Shake to Summarize feature should be
       * enabled
       */
@@ -3630,6 +4733,23 @@
  
      /**
       * Feature flag that indicates if the Import Bookmarks feature is enabled.
+@@ -3076,13 +3063,9 @@
+     /**
+      * Indicates whether or not to show the checklist feature.
+      */
+-    var showSetupChecklist by booleanPreference(
+-        key = appContext.getPreferenceKey(R.string.pref_key_setup_checklist_complete),
+-        default = {
+-            FxNimbus.features.setupChecklist.value().enabled &&
+-                    canShowAddSearchWidgetPrompt(AppWidgetManager.getInstance(appContext))
+-        },
+-    )
++    var showSetupChecklist: Boolean
++        get() = false
++        set(@Suppress("UNUSED_PARAMETER") value) = Unit
+ 
+     /**
+      * Distribution ID that represents if the app was installed via a distribution deal
 --- a/mobile/android/fenix/app/src/main/res/drawable-night/ic_logo_wordmark_normal.xml
 +++ b/mobile/android/fenix/app/src/main/res/drawable-night/ic_logo_wordmark_normal.xml
 @@ -1,5 +0,0 @@
@@ -3702,6 +4822,1441 @@
  
      <!-- Private Browsing Mode Persistent Notification -->
      <color name="pbm_notification_color">@color/photonViolet70</color>
+--- a/mobile/android/fenix/app/src/main/res/values/obscurant_themes.xml
++++ b/mobile/android/fenix/app/src/main/res/values/obscurant_themes.xml
+@@ -0,0 +1,1432 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Generated by tools/make_android_themes.py. Do not edit. -->
++<resources>
++    <style name="ObscurantOverlay0" parent="">
++        <item name="colorPrimary">#ff5500</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#572c17</item>
++        <item name="colorOnPrimaryContainer">#eeeeee</item>
++        <item name="colorSecondary">#cacaca</item>
++        <item name="colorOnSecondary">#121212</item>
++        <item name="colorSecondaryContainer">#343434</item>
++        <item name="colorOnSecondaryContainer">#eeeeee</item>
++        <item name="colorTertiary">#ff5500</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#572c17</item>
++        <item name="colorOnTertiaryContainer">#eeeeee</item>
++        <item name="android:colorBackground">#121212</item>
++        <item name="colorOnBackground">#eeeeee</item>
++        <item name="android:windowBackground">#121212</item>
++        <item name="colorSurface">#1f1f1f</item>
++        <item name="colorOnSurface">#eeeeee</item>
++        <item name="colorSurfaceVariant">#343434</item>
++        <item name="colorOnSurfaceVariant">#cacaca</item>
++        <item name="colorOutline">#4e5050</item>
++        <item name="colorOutlineVariant">#4e5050</item>
++        <item name="colorSurfaceBright">#343434</item>
++        <item name="colorSurfaceDim">#121212</item>
++        <item name="colorSurfaceContainerLowest">#1f1f1f</item>
++        <item name="colorSurfaceContainerLow">#1f1f1f</item>
++        <item name="colorSurfaceContainer">#1f1f1f</item>
++        <item name="colorSurfaceContainerHigh">#343434</item>
++        <item name="colorSurfaceContainerHighest">#343434</item>
++        <item name="android:textColorPrimary">#eeeeee</item>
++        <item name="android:textColorSecondary">#cacaca</item>
++        <item name="android:colorAccent">#ff5500</item>
++        <item name="android:textColorLink">#ff5500</item>
++    </style>
++    <style name="ObscurantOverlay1" parent="">
++        <item name="colorPrimary">#88c0d0</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#445764</item>
++        <item name="colorOnPrimaryContainer">#eceff4</item>
++        <item name="colorSecondary">#d8dee9</item>
++        <item name="colorOnSecondary">#242933</item>
++        <item name="colorSecondaryContainer">#3b4252</item>
++        <item name="colorOnSecondaryContainer">#eceff4</item>
++        <item name="colorTertiary">#88c0d0</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#445764</item>
++        <item name="colorOnTertiaryContainer">#eceff4</item>
++        <item name="android:colorBackground">#242933</item>
++        <item name="colorOnBackground">#eceff4</item>
++        <item name="android:windowBackground">#242933</item>
++        <item name="colorSurface">#2e3440</item>
++        <item name="colorOnSurface">#eceff4</item>
++        <item name="colorSurfaceVariant">#3b4252</item>
++        <item name="colorOnSurfaceVariant">#d8dee9</item>
++        <item name="colorOutline">#4c566a</item>
++        <item name="colorOutlineVariant">#4c566a</item>
++        <item name="colorSurfaceBright">#3b4252</item>
++        <item name="colorSurfaceDim">#242933</item>
++        <item name="colorSurfaceContainerLowest">#2e3440</item>
++        <item name="colorSurfaceContainerLow">#2e3440</item>
++        <item name="colorSurfaceContainer">#2e3440</item>
++        <item name="colorSurfaceContainerHigh">#3b4252</item>
++        <item name="colorSurfaceContainerHighest">#3b4252</item>
++        <item name="android:textColorPrimary">#eceff4</item>
++        <item name="android:textColorSecondary">#d8dee9</item>
++        <item name="android:colorAccent">#88c0d0</item>
++        <item name="android:textColorLink">#88c0d0</item>
++    </style>
++    <style name="ObscurantOverlay2" parent="">
++        <item name="colorPrimary">#5e81ac</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#c3cfdf</item>
++        <item name="colorOnPrimaryContainer">#2e3440</item>
++        <item name="colorSecondary">#4c566a</item>
++        <item name="colorOnSecondary">#d8dee9</item>
++        <item name="colorSecondaryContainer">#eceff4</item>
++        <item name="colorOnSecondaryContainer">#2e3440</item>
++        <item name="colorTertiary">#5e81ac</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#c3cfdf</item>
++        <item name="colorOnTertiaryContainer">#2e3440</item>
++        <item name="android:colorBackground">#d8dee9</item>
++        <item name="colorOnBackground">#2e3440</item>
++        <item name="android:windowBackground">#d8dee9</item>
++        <item name="colorSurface">#e5e9f0</item>
++        <item name="colorOnSurface">#2e3440</item>
++        <item name="colorSurfaceVariant">#eceff4</item>
++        <item name="colorOnSurfaceVariant">#4c566a</item>
++        <item name="colorOutline">#b8c0d0</item>
++        <item name="colorOutlineVariant">#b8c0d0</item>
++        <item name="colorSurfaceBright">#eceff4</item>
++        <item name="colorSurfaceDim">#d8dee9</item>
++        <item name="colorSurfaceContainerLowest">#e5e9f0</item>
++        <item name="colorSurfaceContainerLow">#e5e9f0</item>
++        <item name="colorSurfaceContainer">#e5e9f0</item>
++        <item name="colorSurfaceContainerHigh">#eceff4</item>
++        <item name="colorSurfaceContainerHighest">#eceff4</item>
++        <item name="android:textColorPrimary">#2e3440</item>
++        <item name="android:textColorSecondary">#4c566a</item>
++        <item name="android:colorAccent">#5e81ac</item>
++        <item name="android:textColorLink">#5e81ac</item>
++    </style>
++    <style name="ObscurantOverlay3" parent="">
++        <item name="colorPrimary">#bd93f9</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#4d4467</item>
++        <item name="colorOnPrimaryContainer">#f8f8f2</item>
++        <item name="colorSecondary">#b6b8c8</item>
++        <item name="colorOnSecondary">#21222c</item>
++        <item name="colorSecondaryContainer">#44475a</item>
++        <item name="colorOnSecondaryContainer">#f8f8f2</item>
++        <item name="colorTertiary">#bd93f9</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#4d4467</item>
++        <item name="colorOnTertiaryContainer">#f8f8f2</item>
++        <item name="android:colorBackground">#21222c</item>
++        <item name="colorOnBackground">#f8f8f2</item>
++        <item name="android:windowBackground">#21222c</item>
++        <item name="colorSurface">#282a36</item>
++        <item name="colorOnSurface">#f8f8f2</item>
++        <item name="colorSurfaceVariant">#44475a</item>
++        <item name="colorOnSurfaceVariant">#b6b8c8</item>
++        <item name="colorOutline">#44475a</item>
++        <item name="colorOutlineVariant">#44475a</item>
++        <item name="colorSurfaceBright">#44475a</item>
++        <item name="colorSurfaceDim">#21222c</item>
++        <item name="colorSurfaceContainerLowest">#282a36</item>
++        <item name="colorSurfaceContainerLow">#282a36</item>
++        <item name="colorSurfaceContainer">#282a36</item>
++        <item name="colorSurfaceContainerHigh">#44475a</item>
++        <item name="colorSurfaceContainerHighest">#44475a</item>
++        <item name="android:textColorPrimary">#f8f8f2</item>
++        <item name="android:textColorSecondary">#b6b8c8</item>
++        <item name="android:colorAccent">#bd93f9</item>
++        <item name="android:textColorLink">#bd93f9</item>
++    </style>
++    <style name="ObscurantOverlay4" parent="">
++        <item name="colorPrimary">#fabd2f</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#5c4d2a</item>
++        <item name="colorOnPrimaryContainer">#ebdbb2</item>
++        <item name="colorSecondary">#a89984</item>
++        <item name="colorOnSecondary">#1d2021</item>
++        <item name="colorSecondaryContainer">#3c3836</item>
++        <item name="colorOnSecondaryContainer">#ebdbb2</item>
++        <item name="colorTertiary">#fabd2f</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#5c4d2a</item>
++        <item name="colorOnTertiaryContainer">#ebdbb2</item>
++        <item name="android:colorBackground">#1d2021</item>
++        <item name="colorOnBackground">#ebdbb2</item>
++        <item name="android:windowBackground">#1d2021</item>
++        <item name="colorSurface">#282828</item>
++        <item name="colorOnSurface">#ebdbb2</item>
++        <item name="colorSurfaceVariant">#3c3836</item>
++        <item name="colorOnSurfaceVariant">#a89984</item>
++        <item name="colorOutline">#504945</item>
++        <item name="colorOutlineVariant">#504945</item>
++        <item name="colorSurfaceBright">#3c3836</item>
++        <item name="colorSurfaceDim">#1d2021</item>
++        <item name="colorSurfaceContainerLowest">#282828</item>
++        <item name="colorSurfaceContainerLow">#282828</item>
++        <item name="colorSurfaceContainer">#282828</item>
++        <item name="colorSurfaceContainerHigh">#3c3836</item>
++        <item name="colorSurfaceContainerHighest">#3c3836</item>
++        <item name="android:textColorPrimary">#ebdbb2</item>
++        <item name="android:textColorSecondary">#a89984</item>
++        <item name="android:colorAccent">#fabd2f</item>
++        <item name="android:textColorLink">#fabd2f</item>
++    </style>
++    <style name="ObscurantOverlay5" parent="">
++        <item name="colorPrimary">#d65d0e</item>
++        <item name="colorOnPrimary">#ffffff</item>
++        <item name="colorPrimaryContainer">#f2cc99</item>
++        <item name="colorOnPrimaryContainer">#3c3836</item>
++        <item name="colorSecondary">#665c54</item>
++        <item name="colorOnSecondary">#ebdbb2</item>
++        <item name="colorSecondaryContainer">#f2e5bc</item>
++        <item name="colorOnSecondaryContainer">#3c3836</item>
++        <item name="colorTertiary">#d65d0e</item>
++        <item name="colorOnTertiary">#ffffff</item>
++        <item name="colorTertiaryContainer">#f2cc99</item>
++        <item name="colorOnTertiaryContainer">#3c3836</item>
++        <item name="android:colorBackground">#ebdbb2</item>
++        <item name="colorOnBackground">#3c3836</item>
++        <item name="android:windowBackground">#ebdbb2</item>
++        <item name="colorSurface">#fbf1c7</item>
++        <item name="colorOnSurface">#3c3836</item>
++        <item name="colorSurfaceVariant">#f2e5bc</item>
++        <item name="colorOnSurfaceVariant">#665c54</item>
++        <item name="colorOutline">#d5c4a1</item>
++        <item name="colorOutlineVariant">#d5c4a1</item>
++        <item name="colorSurfaceBright">#f2e5bc</item>
++        <item name="colorSurfaceDim">#ebdbb2</item>
++        <item name="colorSurfaceContainerLowest">#fbf1c7</item>
++        <item name="colorSurfaceContainerLow">#fbf1c7</item>
++        <item name="colorSurfaceContainer">#fbf1c7</item>
++        <item name="colorSurfaceContainerHigh">#f2e5bc</item>
++        <item name="colorSurfaceContainerHighest">#f2e5bc</item>
++        <item name="android:textColorPrimary">#3c3836</item>
++        <item name="android:textColorSecondary">#665c54</item>
++        <item name="android:colorAccent">#d65d0e</item>
++        <item name="android:textColorLink">#d65d0e</item>
++    </style>
++    <style name="ObscurantOverlay6" parent="">
++        <item name="colorPrimary">#b58900</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#2d4228</item>
++        <item name="colorOnPrimaryContainer">#93a1a1</item>
++        <item name="colorSecondary">#839496</item>
++        <item name="colorOnSecondary">#00212b</item>
++        <item name="colorSecondaryContainer">#073642</item>
++        <item name="colorOnSecondaryContainer">#93a1a1</item>
++        <item name="colorTertiary">#b58900</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#2d4228</item>
++        <item name="colorOnTertiaryContainer">#93a1a1</item>
++        <item name="android:colorBackground">#00212b</item>
++        <item name="colorOnBackground">#93a1a1</item>
++        <item name="android:windowBackground">#00212b</item>
++        <item name="colorSurface">#002b36</item>
++        <item name="colorOnSurface">#93a1a1</item>
++        <item name="colorSurfaceVariant">#073642</item>
++        <item name="colorOnSurfaceVariant">#839496</item>
++        <item name="colorOutline">#0b4350</item>
++        <item name="colorOutlineVariant">#0b4350</item>
++        <item name="colorSurfaceBright">#073642</item>
++        <item name="colorSurfaceDim">#00212b</item>
++        <item name="colorSurfaceContainerLowest">#002b36</item>
++        <item name="colorSurfaceContainerLow">#002b36</item>
++        <item name="colorSurfaceContainer">#002b36</item>
++        <item name="colorSurfaceContainerHigh">#073642</item>
++        <item name="colorSurfaceContainerHighest">#073642</item>
++        <item name="android:textColorPrimary">#93a1a1</item>
++        <item name="android:textColorSecondary">#839496</item>
++        <item name="android:colorAccent">#b58900</item>
++        <item name="android:textColorLink">#b58900</item>
++    </style>
++    <style name="ObscurantOverlay7" parent="">
++        <item name="colorPrimary">#268bd2</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#c7dbdf</item>
++        <item name="colorOnPrimaryContainer">#586e75</item>
++        <item name="colorSecondary">#657b83</item>
++        <item name="colorOnSecondary">#eee8d5</item>
++        <item name="colorSecondaryContainer">#eee8d5</item>
++        <item name="colorOnSecondaryContainer">#586e75</item>
++        <item name="colorTertiary">#268bd2</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#c7dbdf</item>
++        <item name="colorOnTertiaryContainer">#586e75</item>
++        <item name="android:colorBackground">#eee8d5</item>
++        <item name="colorOnBackground">#586e75</item>
++        <item name="android:windowBackground">#eee8d5</item>
++        <item name="colorSurface">#fdf6e3</item>
++        <item name="colorOnSurface">#586e75</item>
++        <item name="colorSurfaceVariant">#eee8d5</item>
++        <item name="colorOnSurfaceVariant">#657b83</item>
++        <item name="colorOutline">#d6cfb8</item>
++        <item name="colorOutlineVariant">#d6cfb8</item>
++        <item name="colorSurfaceBright">#eee8d5</item>
++        <item name="colorSurfaceDim">#eee8d5</item>
++        <item name="colorSurfaceContainerLowest">#fdf6e3</item>
++        <item name="colorSurfaceContainerLow">#fdf6e3</item>
++        <item name="colorSurfaceContainer">#fdf6e3</item>
++        <item name="colorSurfaceContainerHigh">#eee8d5</item>
++        <item name="colorSurfaceContainerHighest">#eee8d5</item>
++        <item name="android:textColorPrimary">#586e75</item>
++        <item name="android:textColorSecondary">#657b83</item>
++        <item name="android:colorAccent">#268bd2</item>
++        <item name="android:textColorLink">#268bd2</item>
++    </style>
++    <style name="ObscurantOverlay8" parent="">
++        <item name="colorPrimary">#cba6f7</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#494060</item>
++        <item name="colorOnPrimaryContainer">#cdd6f4</item>
++        <item name="colorSecondary">#a6adc8</item>
++        <item name="colorOnSecondary">#11111b</item>
++        <item name="colorSecondaryContainer">#313244</item>
++        <item name="colorOnSecondaryContainer">#cdd6f4</item>
++        <item name="colorTertiary">#cba6f7</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#494060</item>
++        <item name="colorOnTertiaryContainer">#cdd6f4</item>
++        <item name="android:colorBackground">#11111b</item>
++        <item name="colorOnBackground">#cdd6f4</item>
++        <item name="android:windowBackground">#11111b</item>
++        <item name="colorSurface">#1e1e2e</item>
++        <item name="colorOnSurface">#cdd6f4</item>
++        <item name="colorSurfaceVariant">#313244</item>
++        <item name="colorOnSurfaceVariant">#a6adc8</item>
++        <item name="colorOutline">#45475a</item>
++        <item name="colorOutlineVariant">#45475a</item>
++        <item name="colorSurfaceBright">#313244</item>
++        <item name="colorSurfaceDim">#11111b</item>
++        <item name="colorSurfaceContainerLowest">#1e1e2e</item>
++        <item name="colorSurfaceContainerLow">#1e1e2e</item>
++        <item name="colorSurfaceContainer">#1e1e2e</item>
++        <item name="colorSurfaceContainerHigh">#313244</item>
++        <item name="colorSurfaceContainerHighest">#313244</item>
++        <item name="android:textColorPrimary">#cdd6f4</item>
++        <item name="android:textColorSecondary">#a6adc8</item>
++        <item name="android:colorAccent">#cba6f7</item>
++        <item name="android:textColorLink">#cba6f7</item>
++    </style>
++    <style name="ObscurantOverlay9" parent="">
++        <item name="colorPrimary">#c6a0f6</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#4c4569</item>
++        <item name="colorOnPrimaryContainer">#cad3f5</item>
++        <item name="colorSecondary">#a5adcb</item>
++        <item name="colorOnSecondary">#181926</item>
++        <item name="colorSecondaryContainer">#363a4f</item>
++        <item name="colorOnSecondaryContainer">#cad3f5</item>
++        <item name="colorTertiary">#c6a0f6</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#4c4569</item>
++        <item name="colorOnTertiaryContainer">#cad3f5</item>
++        <item name="android:colorBackground">#181926</item>
++        <item name="colorOnBackground">#cad3f5</item>
++        <item name="android:windowBackground">#181926</item>
++        <item name="colorSurface">#24273a</item>
++        <item name="colorOnSurface">#cad3f5</item>
++        <item name="colorSurfaceVariant">#363a4f</item>
++        <item name="colorOnSurfaceVariant">#a5adcb</item>
++        <item name="colorOutline">#494d64</item>
++        <item name="colorOutlineVariant">#494d64</item>
++        <item name="colorSurfaceBright">#363a4f</item>
++        <item name="colorSurfaceDim">#181926</item>
++        <item name="colorSurfaceContainerLowest">#24273a</item>
++        <item name="colorSurfaceContainerLow">#24273a</item>
++        <item name="colorSurfaceContainer">#24273a</item>
++        <item name="colorSurfaceContainerHigh">#363a4f</item>
++        <item name="colorSurfaceContainerHighest">#363a4f</item>
++        <item name="android:textColorPrimary">#cad3f5</item>
++        <item name="android:textColorSecondary">#a5adcb</item>
++        <item name="android:colorAccent">#c6a0f6</item>
++        <item name="android:textColorLink">#c6a0f6</item>
++    </style>
++    <style name="ObscurantOverlay10" parent="">
++        <item name="colorPrimary">#ca9ee6</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#564e6e</item>
++        <item name="colorOnPrimaryContainer">#c6d0f5</item>
++        <item name="colorSecondary">#a5adce</item>
++        <item name="colorOnSecondary">#232634</item>
++        <item name="colorSecondaryContainer">#414559</item>
++        <item name="colorOnSecondaryContainer">#c6d0f5</item>
++        <item name="colorTertiary">#ca9ee6</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#564e6e</item>
++        <item name="colorOnTertiaryContainer">#c6d0f5</item>
++        <item name="android:colorBackground">#232634</item>
++        <item name="colorOnBackground">#c6d0f5</item>
++        <item name="android:windowBackground">#232634</item>
++        <item name="colorSurface">#303446</item>
++        <item name="colorOnSurface">#c6d0f5</item>
++        <item name="colorSurfaceVariant">#414559</item>
++        <item name="colorOnSurfaceVariant">#a5adce</item>
++        <item name="colorOutline">#51576d</item>
++        <item name="colorOutlineVariant">#51576d</item>
++        <item name="colorSurfaceBright">#414559</item>
++        <item name="colorSurfaceDim">#232634</item>
++        <item name="colorSurfaceContainerLowest">#303446</item>
++        <item name="colorSurfaceContainerLow">#303446</item>
++        <item name="colorSurfaceContainer">#303446</item>
++        <item name="colorSurfaceContainerHigh">#414559</item>
++        <item name="colorSurfaceContainerHighest">#414559</item>
++        <item name="android:textColorPrimary">#c6d0f5</item>
++        <item name="android:textColorSecondary">#a5adce</item>
++        <item name="android:colorAccent">#ca9ee6</item>
++        <item name="android:textColorLink">#ca9ee6</item>
++    </style>
++    <style name="ObscurantOverlay11" parent="">
++        <item name="colorPrimary">#8839ef</item>
++        <item name="colorOnPrimary">#ffffff</item>
++        <item name="colorPrimaryContainer">#d5c3f4</item>
++        <item name="colorOnPrimaryContainer">#4c4f69</item>
++        <item name="colorSecondary">#6c6f85</item>
++        <item name="colorOnSecondary">#dce0e8</item>
++        <item name="colorSecondaryContainer">#e6e9ef</item>
++        <item name="colorOnSecondaryContainer">#4c4f69</item>
++        <item name="colorTertiary">#8839ef</item>
++        <item name="colorOnTertiary">#ffffff</item>
++        <item name="colorTertiaryContainer">#d5c3f4</item>
++        <item name="colorOnTertiaryContainer">#4c4f69</item>
++        <item name="android:colorBackground">#dce0e8</item>
++        <item name="colorOnBackground">#4c4f69</item>
++        <item name="android:windowBackground">#dce0e8</item>
++        <item name="colorSurface">#eff1f5</item>
++        <item name="colorOnSurface">#4c4f69</item>
++        <item name="colorSurfaceVariant">#e6e9ef</item>
++        <item name="colorOnSurfaceVariant">#6c6f85</item>
++        <item name="colorOutline">#ccd0da</item>
++        <item name="colorOutlineVariant">#ccd0da</item>
++        <item name="colorSurfaceBright">#e6e9ef</item>
++        <item name="colorSurfaceDim">#dce0e8</item>
++        <item name="colorSurfaceContainerLowest">#eff1f5</item>
++        <item name="colorSurfaceContainerLow">#eff1f5</item>
++        <item name="colorSurfaceContainer">#eff1f5</item>
++        <item name="colorSurfaceContainerHigh">#e6e9ef</item>
++        <item name="colorSurfaceContainerHighest">#e6e9ef</item>
++        <item name="android:textColorPrimary">#4c4f69</item>
++        <item name="android:textColorSecondary">#6c6f85</item>
++        <item name="android:colorAccent">#8839ef</item>
++        <item name="android:textColorLink">#8839ef</item>
++    </style>
++    <style name="ObscurantOverlay12" parent="">
++        <item name="colorPrimary">#7aa2f7</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#323d5a</item>
++        <item name="colorOnPrimaryContainer">#c0caf5</item>
++        <item name="colorSecondary">#a9b1d6</item>
++        <item name="colorOnSecondary">#16161e</item>
++        <item name="colorSecondaryContainer">#24283b</item>
++        <item name="colorOnSecondaryContainer">#c0caf5</item>
++        <item name="colorTertiary">#7aa2f7</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#323d5a</item>
++        <item name="colorOnTertiaryContainer">#c0caf5</item>
++        <item name="android:colorBackground">#16161e</item>
++        <item name="colorOnBackground">#c0caf5</item>
++        <item name="android:windowBackground">#16161e</item>
++        <item name="colorSurface">#1a1b26</item>
++        <item name="colorOnSurface">#c0caf5</item>
++        <item name="colorSurfaceVariant">#24283b</item>
++        <item name="colorOnSurfaceVariant">#a9b1d6</item>
++        <item name="colorOutline">#3b4261</item>
++        <item name="colorOutlineVariant">#3b4261</item>
++        <item name="colorSurfaceBright">#24283b</item>
++        <item name="colorSurfaceDim">#16161e</item>
++        <item name="colorSurfaceContainerLowest">#1a1b26</item>
++        <item name="colorSurfaceContainerLow">#1a1b26</item>
++        <item name="colorSurfaceContainer">#1a1b26</item>
++        <item name="colorSurfaceContainerHigh">#24283b</item>
++        <item name="colorSurfaceContainerHighest">#24283b</item>
++        <item name="android:textColorPrimary">#c0caf5</item>
++        <item name="android:textColorSecondary">#a9b1d6</item>
++        <item name="android:colorAccent">#7aa2f7</item>
++        <item name="android:textColorLink">#7aa2f7</item>
++    </style>
++    <style name="ObscurantOverlay13" parent="">
++        <item name="colorPrimary">#61afef</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#364d63</item>
++        <item name="colorOnPrimaryContainer">#abb2bf</item>
++        <item name="colorSecondary">#828997</item>
++        <item name="colorOnSecondary">#21252b</item>
++        <item name="colorSecondaryContainer">#2c313a</item>
++        <item name="colorOnSecondaryContainer">#abb2bf</item>
++        <item name="colorTertiary">#61afef</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#364d63</item>
++        <item name="colorOnTertiaryContainer">#abb2bf</item>
++        <item name="android:colorBackground">#21252b</item>
++        <item name="colorOnBackground">#abb2bf</item>
++        <item name="android:windowBackground">#21252b</item>
++        <item name="colorSurface">#282c34</item>
++        <item name="colorOnSurface">#abb2bf</item>
++        <item name="colorSurfaceVariant">#2c313a</item>
++        <item name="colorOnSurfaceVariant">#828997</item>
++        <item name="colorOutline">#3e4451</item>
++        <item name="colorOutlineVariant">#3e4451</item>
++        <item name="colorSurfaceBright">#2c313a</item>
++        <item name="colorSurfaceDim">#21252b</item>
++        <item name="colorSurfaceContainerLowest">#282c34</item>
++        <item name="colorSurfaceContainerLow">#282c34</item>
++        <item name="colorSurfaceContainer">#282c34</item>
++        <item name="colorSurfaceContainerHigh">#2c313a</item>
++        <item name="colorSurfaceContainerHighest">#2c313a</item>
++        <item name="android:textColorPrimary">#abb2bf</item>
++        <item name="android:textColorSecondary">#828997</item>
++        <item name="android:colorAccent">#61afef</item>
++        <item name="android:textColorLink">#61afef</item>
++    </style>
++    <style name="ObscurantOverlay14" parent="">
++        <item name="colorPrimary">#c4a7e7</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#443b55</item>
++        <item name="colorOnPrimaryContainer">#e0def4</item>
++        <item name="colorSecondary">#908caa</item>
++        <item name="colorOnSecondary">#16141f</item>
++        <item name="colorSecondaryContainer">#26233a</item>
++        <item name="colorOnSecondaryContainer">#e0def4</item>
++        <item name="colorTertiary">#c4a7e7</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#443b55</item>
++        <item name="colorOnTertiaryContainer">#e0def4</item>
++        <item name="android:colorBackground">#16141f</item>
++        <item name="colorOnBackground">#e0def4</item>
++        <item name="android:windowBackground">#16141f</item>
++        <item name="colorSurface">#191724</item>
++        <item name="colorOnSurface">#e0def4</item>
++        <item name="colorSurfaceVariant">#26233a</item>
++        <item name="colorOnSurfaceVariant">#908caa</item>
++        <item name="colorOutline">#403d52</item>
++        <item name="colorOutlineVariant">#403d52</item>
++        <item name="colorSurfaceBright">#26233a</item>
++        <item name="colorSurfaceDim">#16141f</item>
++        <item name="colorSurfaceContainerLowest">#191724</item>
++        <item name="colorSurfaceContainerLow">#191724</item>
++        <item name="colorSurfaceContainer">#191724</item>
++        <item name="colorSurfaceContainerHigh">#26233a</item>
++        <item name="colorSurfaceContainerHighest">#26233a</item>
++        <item name="android:textColorPrimary">#e0def4</item>
++        <item name="android:textColorSecondary">#908caa</item>
++        <item name="android:colorAccent">#c4a7e7</item>
++        <item name="android:textColorLink">#c4a7e7</item>
++    </style>
++    <style name="ObscurantOverlay15" parent="">
++        <item name="colorPrimary">#d7827e</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#f1d8d1</item>
++        <item name="colorOnPrimaryContainer">#575279</item>
++        <item name="colorSecondary">#797593</item>
++        <item name="colorOnSecondary">#f2e9e1</item>
++        <item name="colorSecondaryContainer">#fffaf3</item>
++        <item name="colorOnSecondaryContainer">#575279</item>
++        <item name="colorTertiary">#d7827e</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#f1d8d1</item>
++        <item name="colorOnTertiaryContainer">#575279</item>
++        <item name="android:colorBackground">#f2e9e1</item>
++        <item name="colorOnBackground">#575279</item>
++        <item name="android:windowBackground">#f2e9e1</item>
++        <item name="colorSurface">#faf4ed</item>
++        <item name="colorOnSurface">#575279</item>
++        <item name="colorSurfaceVariant">#fffaf3</item>
++        <item name="colorOnSurfaceVariant">#797593</item>
++        <item name="colorOutline">#dfdad9</item>
++        <item name="colorOutlineVariant">#dfdad9</item>
++        <item name="colorSurfaceBright">#fffaf3</item>
++        <item name="colorSurfaceDim">#f2e9e1</item>
++        <item name="colorSurfaceContainerLowest">#faf4ed</item>
++        <item name="colorSurfaceContainerLow">#faf4ed</item>
++        <item name="colorSurfaceContainer">#faf4ed</item>
++        <item name="colorSurfaceContainerHigh">#fffaf3</item>
++        <item name="colorSurfaceContainerHighest">#fffaf3</item>
++        <item name="android:textColorPrimary">#575279</item>
++        <item name="android:textColorSecondary">#797593</item>
++        <item name="android:colorAccent">#d7827e</item>
++        <item name="android:textColorLink">#d7827e</item>
++    </style>
++    <style name="ObscurantOverlay16" parent="">
++        <item name="colorPrimary">#a6e22e</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#475625</item>
++        <item name="colorOnPrimaryContainer">#f8f8f2</item>
++        <item name="colorSecondary">#cfcfc2</item>
++        <item name="colorOnSecondary">#1e1f1c</item>
++        <item name="colorSecondaryContainer">#3e3d32</item>
++        <item name="colorOnSecondaryContainer">#f8f8f2</item>
++        <item name="colorTertiary">#a6e22e</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#475625</item>
++        <item name="colorOnTertiaryContainer">#f8f8f2</item>
++        <item name="android:colorBackground">#1e1f1c</item>
++        <item name="colorOnBackground">#f8f8f2</item>
++        <item name="android:windowBackground">#1e1f1c</item>
++        <item name="colorSurface">#272822</item>
++        <item name="colorOnSurface">#f8f8f2</item>
++        <item name="colorSurfaceVariant">#3e3d32</item>
++        <item name="colorOnSurfaceVariant">#cfcfc2</item>
++        <item name="colorOutline">#49483e</item>
++        <item name="colorOutlineVariant">#49483e</item>
++        <item name="colorSurfaceBright">#3e3d32</item>
++        <item name="colorSurfaceDim">#1e1f1c</item>
++        <item name="colorSurfaceContainerLowest">#272822</item>
++        <item name="colorSurfaceContainerLow">#272822</item>
++        <item name="colorSurfaceContainer">#272822</item>
++        <item name="colorSurfaceContainerHigh">#3e3d32</item>
++        <item name="colorSurfaceContainerHighest">#3e3d32</item>
++        <item name="android:textColorPrimary">#f8f8f2</item>
++        <item name="android:textColorSecondary">#cfcfc2</item>
++        <item name="android:colorAccent">#a6e22e</item>
++        <item name="android:textColorLink">#a6e22e</item>
++    </style>
++    <style name="ObscurantOverlay17" parent="">
++        <item name="colorPrimary">#a7c080</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#4c584c</item>
++        <item name="colorOnPrimaryContainer">#d3c6aa</item>
++        <item name="colorSecondary">#9da9a0</item>
++        <item name="colorOnSecondary">#232a2e</item>
++        <item name="colorSecondaryContainer">#343f44</item>
++        <item name="colorOnSecondaryContainer">#d3c6aa</item>
++        <item name="colorTertiary">#a7c080</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#4c584c</item>
++        <item name="colorOnTertiaryContainer">#d3c6aa</item>
++        <item name="android:colorBackground">#232a2e</item>
++        <item name="colorOnBackground">#d3c6aa</item>
++        <item name="android:windowBackground">#232a2e</item>
++        <item name="colorSurface">#2d353b</item>
++        <item name="colorOnSurface">#d3c6aa</item>
++        <item name="colorSurfaceVariant">#343f44</item>
++        <item name="colorOnSurfaceVariant">#9da9a0</item>
++        <item name="colorOutline">#475258</item>
++        <item name="colorOutlineVariant">#475258</item>
++        <item name="colorSurfaceBright">#343f44</item>
++        <item name="colorSurfaceDim">#232a2e</item>
++        <item name="colorSurfaceContainerLowest">#2d353b</item>
++        <item name="colorSurfaceContainerLow">#2d353b</item>
++        <item name="colorSurfaceContainer">#2d353b</item>
++        <item name="colorSurfaceContainerHigh">#343f44</item>
++        <item name="colorSurfaceContainerHighest">#343f44</item>
++        <item name="android:textColorPrimary">#d3c6aa</item>
++        <item name="android:textColorSecondary">#9da9a0</item>
++        <item name="android:colorAccent">#a7c080</item>
++        <item name="android:textColorLink">#a7c080</item>
++    </style>
++    <style name="ObscurantOverlay18" parent="">
++        <item name="colorPrimary">#7e9cd8</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#373e54</item>
++        <item name="colorOnPrimaryContainer">#dcd7ba</item>
++        <item name="colorSecondary">#c8c093</item>
++        <item name="colorOnSecondary">#16161d</item>
++        <item name="colorSecondaryContainer">#2a2a37</item>
++        <item name="colorOnSecondaryContainer">#dcd7ba</item>
++        <item name="colorTertiary">#7e9cd8</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#373e54</item>
++        <item name="colorOnTertiaryContainer">#dcd7ba</item>
++        <item name="android:colorBackground">#16161d</item>
++        <item name="colorOnBackground">#dcd7ba</item>
++        <item name="android:windowBackground">#16161d</item>
++        <item name="colorSurface">#1f1f28</item>
++        <item name="colorOnSurface">#dcd7ba</item>
++        <item name="colorSurfaceVariant">#2a2a37</item>
++        <item name="colorOnSurfaceVariant">#c8c093</item>
++        <item name="colorOutline">#363646</item>
++        <item name="colorOutlineVariant">#363646</item>
++        <item name="colorSurfaceBright">#2a2a37</item>
++        <item name="colorSurfaceDim">#16161d</item>
++        <item name="colorSurfaceContainerLowest">#1f1f28</item>
++        <item name="colorSurfaceContainerLow">#1f1f28</item>
++        <item name="colorSurfaceContainer">#1f1f28</item>
++        <item name="colorSurfaceContainerHigh">#2a2a37</item>
++        <item name="colorSurfaceContainerHighest">#2a2a37</item>
++        <item name="android:textColorPrimary">#dcd7ba</item>
++        <item name="android:textColorSecondary">#c8c093</item>
++        <item name="android:colorAccent">#7e9cd8</item>
++        <item name="android:textColorLink">#7e9cd8</item>
++    </style>
++    <style name="ObscurantOverlay19" parent="">
++        <item name="colorPrimary">#e6b450</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#423823</item>
++        <item name="colorOnPrimaryContainer">#bfbdb6</item>
++        <item name="colorSecondary">#acb6bf</item>
++        <item name="colorOnSecondary">#090d13</item>
++        <item name="colorSecondaryContainer">#131721</item>
++        <item name="colorOnSecondaryContainer">#bfbdb6</item>
++        <item name="colorTertiary">#e6b450</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#423823</item>
++        <item name="colorOnTertiaryContainer">#bfbdb6</item>
++        <item name="android:colorBackground">#090d13</item>
++        <item name="colorOnBackground">#bfbdb6</item>
++        <item name="android:windowBackground">#090d13</item>
++        <item name="colorSurface">#0b0e14</item>
++        <item name="colorOnSurface">#bfbdb6</item>
++        <item name="colorSurfaceVariant">#131721</item>
++        <item name="colorOnSurfaceVariant">#acb6bf</item>
++        <item name="colorOutline">#1f2430</item>
++        <item name="colorOutlineVariant">#1f2430</item>
++        <item name="colorSurfaceBright">#131721</item>
++        <item name="colorSurfaceDim">#090d13</item>
++        <item name="colorSurfaceContainerLowest">#0b0e14</item>
++        <item name="colorSurfaceContainerLow">#0b0e14</item>
++        <item name="colorSurfaceContainer">#0b0e14</item>
++        <item name="colorSurfaceContainerHigh">#131721</item>
++        <item name="colorSurfaceContainerHighest">#131721</item>
++        <item name="android:textColorPrimary">#bfbdb6</item>
++        <item name="android:textColorSecondary">#acb6bf</item>
++        <item name="android:colorAccent">#e6b450</item>
++        <item name="android:textColorLink">#e6b450</item>
++    </style>
++    <style name="ObscurantOverlay20" parent="">
++        <item name="colorPrimary">#ffcc66</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#574e3e</item>
++        <item name="colorOnPrimaryContainer">#cccac2</item>
++        <item name="colorSecondary">#a0a3a8</item>
++        <item name="colorOnSecondary">#171b24</item>
++        <item name="colorSecondaryContainer">#272d38</item>
++        <item name="colorOnSecondaryContainer">#cccac2</item>
++        <item name="colorTertiary">#ffcc66</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#574e3e</item>
++        <item name="colorOnTertiaryContainer">#cccac2</item>
++        <item name="android:colorBackground">#171b24</item>
++        <item name="colorOnBackground">#cccac2</item>
++        <item name="android:windowBackground">#171b24</item>
++        <item name="colorSurface">#1f2430</item>
++        <item name="colorOnSurface">#cccac2</item>
++        <item name="colorSurfaceVariant">#272d38</item>
++        <item name="colorOnSurfaceVariant">#a0a3a8</item>
++        <item name="colorOutline">#343b4d</item>
++        <item name="colorOutlineVariant">#343b4d</item>
++        <item name="colorSurfaceBright">#272d38</item>
++        <item name="colorSurfaceDim">#171b24</item>
++        <item name="colorSurfaceContainerLowest">#1f2430</item>
++        <item name="colorSurfaceContainerLow">#1f2430</item>
++        <item name="colorSurfaceContainer">#1f2430</item>
++        <item name="colorSurfaceContainerHigh">#272d38</item>
++        <item name="colorSurfaceContainerHighest">#272d38</item>
++        <item name="android:textColorPrimary">#cccac2</item>
++        <item name="android:textColorSecondary">#a0a3a8</item>
++        <item name="android:colorAccent">#ffcc66</item>
++        <item name="android:textColorLink">#ffcc66</item>
++    </style>
++    <style name="ObscurantOverlay21" parent="">
++        <item name="colorPrimary">#ff9940</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#fde3cd</item>
++        <item name="colorOnPrimaryContainer">#5c6166</item>
++        <item name="colorSecondary">#787b80</item>
++        <item name="colorOnSecondary">#e7e8e9</item>
++        <item name="colorSecondaryContainer">#f0f0f0</item>
++        <item name="colorOnSecondaryContainer">#5c6166</item>
++        <item name="colorTertiary">#ff9940</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#fde3cd</item>
++        <item name="colorOnTertiaryContainer">#5c6166</item>
++        <item name="android:colorBackground">#e7e8e9</item>
++        <item name="colorOnBackground">#5c6166</item>
++        <item name="android:windowBackground">#e7e8e9</item>
++        <item name="colorSurface">#fcfcfc</item>
++        <item name="colorOnSurface">#5c6166</item>
++        <item name="colorSurfaceVariant">#f0f0f0</item>
++        <item name="colorOnSurfaceVariant">#787b80</item>
++        <item name="colorOutline">#d9d8d7</item>
++        <item name="colorOutlineVariant">#d9d8d7</item>
++        <item name="colorSurfaceBright">#f0f0f0</item>
++        <item name="colorSurfaceDim">#e7e8e9</item>
++        <item name="colorSurfaceContainerLowest">#fcfcfc</item>
++        <item name="colorSurfaceContainerLow">#fcfcfc</item>
++        <item name="colorSurfaceContainer">#fcfcfc</item>
++        <item name="colorSurfaceContainerHigh">#f0f0f0</item>
++        <item name="colorSurfaceContainerHighest">#f0f0f0</item>
++        <item name="android:textColorPrimary">#5c6166</item>
++        <item name="android:textColorSecondary">#787b80</item>
++        <item name="android:colorAccent">#ff9940</item>
++        <item name="android:textColorLink">#ff9940</item>
++    </style>
++    <style name="ObscurantOverlay22" parent="">
++        <item name="colorPrimary">#84ffff</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#2c4c53</item>
++        <item name="colorOnPrimaryContainer">#a6accd</item>
++        <item name="colorSecondary">#8f93a2</item>
++        <item name="colorOnSecondary">#090b10</item>
++        <item name="colorSecondaryContainer">#1a1c25</item>
++        <item name="colorOnSecondaryContainer">#a6accd</item>
++        <item name="colorTertiary">#84ffff</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#2c4c53</item>
++        <item name="colorOnTertiaryContainer">#a6accd</item>
++        <item name="android:colorBackground">#090b10</item>
++        <item name="colorOnBackground">#a6accd</item>
++        <item name="android:windowBackground">#090b10</item>
++        <item name="colorSurface">#0f111a</item>
++        <item name="colorOnSurface">#a6accd</item>
++        <item name="colorSurfaceVariant">#1a1c25</item>
++        <item name="colorOnSurfaceVariant">#8f93a2</item>
++        <item name="colorOutline">#292d3e</item>
++        <item name="colorOutlineVariant">#292d3e</item>
++        <item name="colorSurfaceBright">#1a1c25</item>
++        <item name="colorSurfaceDim">#090b10</item>
++        <item name="colorSurfaceContainerLowest">#0f111a</item>
++        <item name="colorSurfaceContainerLow">#0f111a</item>
++        <item name="colorSurfaceContainer">#0f111a</item>
++        <item name="colorSurfaceContainerHigh">#1a1c25</item>
++        <item name="colorSurfaceContainerHighest">#1a1c25</item>
++        <item name="android:textColorPrimary">#a6accd</item>
++        <item name="android:textColorSecondary">#8f93a2</item>
++        <item name="android:colorAccent">#84ffff</item>
++        <item name="android:textColorLink">#84ffff</item>
++    </style>
++    <style name="ObscurantOverlay23" parent="">
++        <item name="colorPrimary">#6699cc</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#2e465a</item>
++        <item name="colorOnPrimaryContainer">#d8dee9</item>
++        <item name="colorSecondary">#a7adba</item>
++        <item name="colorOnSecondary">#162229</item>
++        <item name="colorSecondaryContainer">#343d46</item>
++        <item name="colorOnSecondaryContainer">#d8dee9</item>
++        <item name="colorTertiary">#6699cc</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#2e465a</item>
++        <item name="colorOnTertiaryContainer">#d8dee9</item>
++        <item name="android:colorBackground">#162229</item>
++        <item name="colorOnBackground">#d8dee9</item>
++        <item name="android:windowBackground">#162229</item>
++        <item name="colorSurface">#1b2b34</item>
++        <item name="colorOnSurface">#d8dee9</item>
++        <item name="colorSurfaceVariant">#343d46</item>
++        <item name="colorOnSurfaceVariant">#a7adba</item>
++        <item name="colorOutline">#4f5b66</item>
++        <item name="colorOutlineVariant">#4f5b66</item>
++        <item name="colorSurfaceBright">#343d46</item>
++        <item name="colorSurfaceDim">#162229</item>
++        <item name="colorSurfaceContainerLowest">#1b2b34</item>
++        <item name="colorSurfaceContainerLow">#1b2b34</item>
++        <item name="colorSurfaceContainer">#1b2b34</item>
++        <item name="colorSurfaceContainerHigh">#343d46</item>
++        <item name="colorSurfaceContainerHighest">#343d46</item>
++        <item name="android:textColorPrimary">#d8dee9</item>
++        <item name="android:textColorSecondary">#a7adba</item>
++        <item name="android:colorAccent">#6699cc</item>
++        <item name="android:textColorLink">#6699cc</item>
++    </style>
++    <style name="ObscurantOverlay24" parent="">
++        <item name="colorPrimary">#5b8cff</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#203164</item>
++        <item name="colorOnPrimaryContainer">#e6ecff</item>
++        <item name="colorSecondary">#a9b4e0</item>
++        <item name="colorOnSecondary">#070b19</item>
++        <item name="colorSecondaryContainer">#18214a</item>
++        <item name="colorOnSecondaryContainer">#e6ecff</item>
++        <item name="colorTertiary">#5b8cff</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#203164</item>
++        <item name="colorOnTertiaryContainer">#e6ecff</item>
++        <item name="android:colorBackground">#070b19</item>
++        <item name="colorOnBackground">#e6ecff</item>
++        <item name="android:windowBackground">#070b19</item>
++        <item name="colorSurface">#0d1330</item>
++        <item name="colorOnSurface">#e6ecff</item>
++        <item name="colorSurfaceVariant">#18214a</item>
++        <item name="colorOnSurfaceVariant">#a9b4e0</item>
++        <item name="colorOutline">#26306a</item>
++        <item name="colorOutlineVariant">#26306a</item>
++        <item name="colorSurfaceBright">#18214a</item>
++        <item name="colorSurfaceDim">#070b19</item>
++        <item name="colorSurfaceContainerLowest">#0d1330</item>
++        <item name="colorSurfaceContainerLow">#0d1330</item>
++        <item name="colorSurfaceContainer">#0d1330</item>
++        <item name="colorSurfaceContainerHigh">#18214a</item>
++        <item name="colorSurfaceContainerHighest">#18214a</item>
++        <item name="android:textColorPrimary">#e6ecff</item>
++        <item name="android:textColorSecondary">#a9b4e0</item>
++        <item name="android:colorAccent">#5b8cff</item>
++        <item name="android:textColorLink">#5b8cff</item>
++    </style>
++    <style name="ObscurantOverlay25" parent="">
++        <item name="colorPrimary">#66ff99</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#1d472a</item>
++        <item name="colorOnPrimaryContainer">#33ff66</item>
++        <item name="colorSecondary">#29cc52</item>
++        <item name="colorOnSecondary">#000000</item>
++        <item name="colorSecondaryContainer">#0d1a0d</item>
++        <item name="colorOnSecondaryContainer">#33ff66</item>
++        <item name="colorTertiary">#66ff99</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#1d472a</item>
++        <item name="colorOnTertiaryContainer">#33ff66</item>
++        <item name="android:colorBackground">#000000</item>
++        <item name="colorOnBackground">#33ff66</item>
++        <item name="android:windowBackground">#000000</item>
++        <item name="colorSurface">#050a05</item>
++        <item name="colorOnSurface">#33ff66</item>
++        <item name="colorSurfaceVariant">#0d1a0d</item>
++        <item name="colorOnSurfaceVariant">#29cc52</item>
++        <item name="colorOutline">#145214</item>
++        <item name="colorOutlineVariant">#145214</item>
++        <item name="colorSurfaceBright">#0d1a0d</item>
++        <item name="colorSurfaceDim">#000000</item>
++        <item name="colorSurfaceContainerLowest">#050a05</item>
++        <item name="colorSurfaceContainerLow">#050a05</item>
++        <item name="colorSurfaceContainer">#050a05</item>
++        <item name="colorSurfaceContainerHigh">#0d1a0d</item>
++        <item name="colorSurfaceContainerHighest">#0d1a0d</item>
++        <item name="android:textColorPrimary">#33ff66</item>
++        <item name="android:textColorSecondary">#29cc52</item>
++        <item name="android:colorAccent">#66ff99</item>
++        <item name="android:textColorLink">#66ff99</item>
++    </style>
++    <style name="ObscurantOverlay26" parent="">
++        <item name="colorPrimary">#ffd166</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#4d3c1a</item>
++        <item name="colorOnPrimaryContainer">#ffb000</item>
++        <item name="colorSecondary">#cc8d00</item>
++        <item name="colorOnSecondary">#0a0600</item>
++        <item name="colorSecondaryContainer">#1f1400</item>
++        <item name="colorOnSecondaryContainer">#ffb000</item>
++        <item name="colorTertiary">#ffd166</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#4d3c1a</item>
++        <item name="colorOnTertiaryContainer">#ffb000</item>
++        <item name="android:colorBackground">#0a0600</item>
++        <item name="colorOnBackground">#ffb000</item>
++        <item name="android:windowBackground">#0a0600</item>
++        <item name="colorSurface">#120b00</item>
++        <item name="colorOnSurface">#ffb000</item>
++        <item name="colorSurfaceVariant">#1f1400</item>
++        <item name="colorOnSurfaceVariant">#cc8d00</item>
++        <item name="colorOutline">#4a3000</item>
++        <item name="colorOutlineVariant">#4a3000</item>
++        <item name="colorSurfaceBright">#1f1400</item>
++        <item name="colorSurfaceDim">#0a0600</item>
++        <item name="colorSurfaceContainerLowest">#120b00</item>
++        <item name="colorSurfaceContainerLow">#120b00</item>
++        <item name="colorSurfaceContainer">#120b00</item>
++        <item name="colorSurfaceContainerHigh">#1f1400</item>
++        <item name="colorSurfaceContainerHighest">#1f1400</item>
++        <item name="android:textColorPrimary">#ffb000</item>
++        <item name="android:textColorSecondary">#cc8d00</item>
++        <item name="android:colorAccent">#ffd166</item>
++        <item name="android:textColorLink">#ffd166</item>
++    </style>
++    <style name="ObscurantOverlay27" parent="">
++        <item name="colorPrimary">#ff2a6d</item>
++        <item name="colorOnPrimary">#ffffff</item>
++        <item name="colorPrimaryContainer">#500e43</item>
++        <item name="colorOnPrimaryContainer">#f3e9ff</item>
++        <item name="colorSecondary">#c3a8ff</item>
++        <item name="colorOnSecondary">#0d0221</item>
++        <item name="colorSecondaryContainer">#240b50</item>
++        <item name="colorOnSecondaryContainer">#f3e9ff</item>
++        <item name="colorTertiary">#ff2a6d</item>
++        <item name="colorOnTertiary">#ffffff</item>
++        <item name="colorTertiaryContainer">#500e43</item>
++        <item name="colorOnTertiaryContainer">#f3e9ff</item>
++        <item name="android:colorBackground">#0d0221</item>
++        <item name="colorOnBackground">#f3e9ff</item>
++        <item name="android:windowBackground">#0d0221</item>
++        <item name="colorSurface">#150535</item>
++        <item name="colorOnSurface">#f3e9ff</item>
++        <item name="colorSurfaceVariant">#240b50</item>
++        <item name="colorOnSurfaceVariant">#c3a8ff</item>
++        <item name="colorOutline">#3b1a78</item>
++        <item name="colorOutlineVariant">#3b1a78</item>
++        <item name="colorSurfaceBright">#240b50</item>
++        <item name="colorSurfaceDim">#0d0221</item>
++        <item name="colorSurfaceContainerLowest">#150535</item>
++        <item name="colorSurfaceContainerLow">#150535</item>
++        <item name="colorSurfaceContainer">#150535</item>
++        <item name="colorSurfaceContainerHigh">#240b50</item>
++        <item name="colorSurfaceContainerHighest">#240b50</item>
++        <item name="android:textColorPrimary">#f3e9ff</item>
++        <item name="android:textColorSecondary">#c3a8ff</item>
++        <item name="android:colorAccent">#ff2a6d</item>
++        <item name="android:textColorLink">#ff2a6d</item>
++    </style>
++    <style name="ObscurantOverlay28" parent="">
++        <item name="colorPrimary">#ff7a59</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#603339</item>
++        <item name="colorOnPrimaryContainer">#ffe3cc</item>
++        <item name="colorSecondary">#e0b9a0</item>
++        <item name="colorOnSecondary">#1f1220</item>
++        <item name="colorSecondaryContainer">#3d2640</item>
++        <item name="colorOnSecondaryContainer">#ffe3cc</item>
++        <item name="colorTertiary">#ff7a59</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#603339</item>
++        <item name="colorOnTertiaryContainer">#ffe3cc</item>
++        <item name="android:colorBackground">#1f1220</item>
++        <item name="colorOnBackground">#ffe3cc</item>
++        <item name="android:windowBackground">#1f1220</item>
++        <item name="colorSurface">#2b1b2e</item>
++        <item name="colorOnSurface">#ffe3cc</item>
++        <item name="colorSurfaceVariant">#3d2640</item>
++        <item name="colorOnSurfaceVariant">#e0b9a0</item>
++        <item name="colorOutline">#5a3a5e</item>
++        <item name="colorOutlineVariant">#5a3a5e</item>
++        <item name="colorSurfaceBright">#3d2640</item>
++        <item name="colorSurfaceDim">#1f1220</item>
++        <item name="colorSurfaceContainerLowest">#2b1b2e</item>
++        <item name="colorSurfaceContainerLow">#2b1b2e</item>
++        <item name="colorSurfaceContainer">#2b1b2e</item>
++        <item name="colorSurfaceContainerHigh">#3d2640</item>
++        <item name="colorSurfaceContainerHighest">#3d2640</item>
++        <item name="android:textColorPrimary">#ffe3cc</item>
++        <item name="android:textColorSecondary">#e0b9a0</item>
++        <item name="android:colorAccent">#ff7a59</item>
++        <item name="android:textColorLink">#ff7a59</item>
++    </style>
++    <style name="ObscurantOverlay29" parent="">
++        <item name="colorPrimary">#6fcf97</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#284c38</item>
++        <item name="colorOnPrimaryContainer">#dff5e6</item>
++        <item name="colorSecondary">#a9cdb5</item>
++        <item name="colorOnSecondary">#0b1510</item>
++        <item name="colorSecondaryContainer">#1b3326</item>
++        <item name="colorOnSecondaryContainer">#dff5e6</item>
++        <item name="colorTertiary">#6fcf97</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#284c38</item>
++        <item name="colorOnTertiaryContainer">#dff5e6</item>
++        <item name="android:colorBackground">#0b1510</item>
++        <item name="colorOnBackground">#dff5e6</item>
++        <item name="android:windowBackground">#0b1510</item>
++        <item name="colorSurface">#112018</item>
++        <item name="colorOnSurface">#dff5e6</item>
++        <item name="colorSurfaceVariant">#1b3326</item>
++        <item name="colorOnSurfaceVariant">#a9cdb5</item>
++        <item name="colorOutline">#285038</item>
++        <item name="colorOutlineVariant">#285038</item>
++        <item name="colorSurfaceBright">#1b3326</item>
++        <item name="colorSurfaceDim">#0b1510</item>
++        <item name="colorSurfaceContainerLowest">#112018</item>
++        <item name="colorSurfaceContainerLow">#112018</item>
++        <item name="colorSurfaceContainer">#112018</item>
++        <item name="colorSurfaceContainerHigh">#1b3326</item>
++        <item name="colorSurfaceContainerHighest">#1b3326</item>
++        <item name="android:textColorPrimary">#dff5e6</item>
++        <item name="android:textColorSecondary">#a9cdb5</item>
++        <item name="android:colorAccent">#6fcf97</item>
++        <item name="android:textColorLink">#6fcf97</item>
++    </style>
++    <style name="ObscurantOverlay30" parent="">
++        <item name="colorPrimary">#2bb3d6</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#11465a</item>
++        <item name="colorOnPrimaryContainer">#d6f0ff</item>
++        <item name="colorSecondary">#9cc7df</item>
++        <item name="colorOnSecondary">#04141c</item>
++        <item name="colorSecondaryContainer">#0f3347</item>
++        <item name="colorOnSecondaryContainer">#d6f0ff</item>
++        <item name="colorTertiary">#2bb3d6</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#11465a</item>
++        <item name="colorOnTertiaryContainer">#d6f0ff</item>
++        <item name="android:colorBackground">#04141c</item>
++        <item name="colorOnBackground">#d6f0ff</item>
++        <item name="android:windowBackground">#04141c</item>
++        <item name="colorSurface">#082230</item>
++        <item name="colorOnSurface">#d6f0ff</item>
++        <item name="colorSurfaceVariant">#0f3347</item>
++        <item name="colorOnSurfaceVariant">#9cc7df</item>
++        <item name="colorOutline">#1b516b</item>
++        <item name="colorOutlineVariant">#1b516b</item>
++        <item name="colorSurfaceBright">#0f3347</item>
++        <item name="colorSurfaceDim">#04141c</item>
++        <item name="colorSurfaceContainerLowest">#082230</item>
++        <item name="colorSurfaceContainerLow">#082230</item>
++        <item name="colorSurfaceContainer">#082230</item>
++        <item name="colorSurfaceContainerHigh">#0f3347</item>
++        <item name="colorSurfaceContainerHighest">#0f3347</item>
++        <item name="android:textColorPrimary">#d6f0ff</item>
++        <item name="android:textColorSecondary">#9cc7df</item>
++        <item name="android:colorAccent">#2bb3d6</item>
++        <item name="android:textColorLink">#2bb3d6</item>
++    </style>
++    <style name="ObscurantOverlay31" parent="">
++        <item name="colorPrimary">#e63946</item>
++        <item name="colorOnPrimary">#ffffff</item>
++        <item name="colorPrimaryContainer">#4f161c</item>
++        <item name="colorOnPrimaryContainer">#ffe5e8</item>
++        <item name="colorSecondary">#d9a6ad</item>
++        <item name="colorOnSecondary">#140608</item>
++        <item name="colorSecondaryContainer">#2e1117</item>
++        <item name="colorOnSecondaryContainer">#ffe5e8</item>
++        <item name="colorTertiary">#e63946</item>
++        <item name="colorOnTertiary">#ffffff</item>
++        <item name="colorTertiaryContainer">#4f161c</item>
++        <item name="colorOnTertiaryContainer">#ffe5e8</item>
++        <item name="android:colorBackground">#140608</item>
++        <item name="colorOnBackground">#ffe5e8</item>
++        <item name="android:windowBackground">#140608</item>
++        <item name="colorSurface">#1d0a0e</item>
++        <item name="colorOnSurface">#ffe5e8</item>
++        <item name="colorSurfaceVariant">#2e1117</item>
++        <item name="colorOnSurfaceVariant">#d9a6ad</item>
++        <item name="colorOutline">#4a1c25</item>
++        <item name="colorOutlineVariant">#4a1c25</item>
++        <item name="colorSurfaceBright">#2e1117</item>
++        <item name="colorSurfaceDim">#140608</item>
++        <item name="colorSurfaceContainerLowest">#1d0a0e</item>
++        <item name="colorSurfaceContainerLow">#1d0a0e</item>
++        <item name="colorSurfaceContainer">#1d0a0e</item>
++        <item name="colorSurfaceContainerHigh">#2e1117</item>
++        <item name="colorSurfaceContainerHighest">#2e1117</item>
++        <item name="android:textColorPrimary">#ffe5e8</item>
++        <item name="android:textColorSecondary">#d9a6ad</item>
++        <item name="android:colorAccent">#e63946</item>
++        <item name="android:textColorLink">#e63946</item>
++    </style>
++    <style name="ObscurantOverlay32" parent="">
++        <item name="colorPrimary">#9d8cff</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#3e376a</item>
++        <item name="colorOnPrimaryContainer">#eae6ff</item>
++        <item name="colorSecondary">#b9b0e8</item>
++        <item name="colorOnSecondary">#17142a</item>
++        <item name="colorSecondaryContainer">#2d2850</item>
++        <item name="colorOnSecondaryContainer">#eae6ff</item>
++        <item name="colorTertiary">#9d8cff</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#3e376a</item>
++        <item name="colorOnTertiaryContainer">#eae6ff</item>
++        <item name="android:colorBackground">#17142a</item>
++        <item name="colorOnBackground">#eae6ff</item>
++        <item name="android:windowBackground">#17142a</item>
++        <item name="colorSurface">#1f1b38</item>
++        <item name="colorOnSurface">#eae6ff</item>
++        <item name="colorSurfaceVariant">#2d2850</item>
++        <item name="colorOnSurfaceVariant">#b9b0e8</item>
++        <item name="colorOutline">#433c7a</item>
++        <item name="colorOutlineVariant">#433c7a</item>
++        <item name="colorSurfaceBright">#2d2850</item>
++        <item name="colorSurfaceDim">#17142a</item>
++        <item name="colorSurfaceContainerLowest">#1f1b38</item>
++        <item name="colorSurfaceContainerLow">#1f1b38</item>
++        <item name="colorSurfaceContainer">#1f1b38</item>
++        <item name="colorSurfaceContainerHigh">#2d2850</item>
++        <item name="colorSurfaceContainerHighest">#2d2850</item>
++        <item name="android:textColorPrimary">#eae6ff</item>
++        <item name="android:textColorSecondary">#b9b0e8</item>
++        <item name="android:colorAccent">#9d8cff</item>
++        <item name="android:textColorLink">#9d8cff</item>
++    </style>
++    <style name="ObscurantOverlay33" parent="">
++        <item name="colorPrimary">#9e9e9e</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#424242</item>
++        <item name="colorOnPrimaryContainer">#e6e6e6</item>
++        <item name="colorSecondary">#b0b0b0</item>
++        <item name="colorOnSecondary">#1a1a1a</item>
++        <item name="colorSecondaryContainer">#303030</item>
++        <item name="colorOnSecondaryContainer">#e6e6e6</item>
++        <item name="colorTertiary">#9e9e9e</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#424242</item>
++        <item name="colorOnTertiaryContainer">#e6e6e6</item>
++        <item name="android:colorBackground">#1a1a1a</item>
++        <item name="colorOnBackground">#e6e6e6</item>
++        <item name="android:windowBackground">#1a1a1a</item>
++        <item name="colorSurface">#242424</item>
++        <item name="colorOnSurface">#e6e6e6</item>
++        <item name="colorSurfaceVariant">#303030</item>
++        <item name="colorOnSurfaceVariant">#b0b0b0</item>
++        <item name="colorOutline">#3d3d3d</item>
++        <item name="colorOutlineVariant">#3d3d3d</item>
++        <item name="colorSurfaceBright">#303030</item>
++        <item name="colorSurfaceDim">#1a1a1a</item>
++        <item name="colorSurfaceContainerLowest">#242424</item>
++        <item name="colorSurfaceContainerLow">#242424</item>
++        <item name="colorSurfaceContainer">#242424</item>
++        <item name="colorSurfaceContainerHigh">#303030</item>
++        <item name="colorSurfaceContainerHighest">#303030</item>
++        <item name="android:textColorPrimary">#e6e6e6</item>
++        <item name="android:textColorSecondary">#b0b0b0</item>
++        <item name="android:colorAccent">#9e9e9e</item>
++        <item name="android:textColorLink">#9e9e9e</item>
++    </style>
++    <style name="ObscurantOverlay34" parent="">
++        <item name="colorPrimary">#ffff00</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#404000</item>
++        <item name="colorOnPrimaryContainer">#ffffff</item>
++        <item name="colorSecondary">#e0e0e0</item>
++        <item name="colorOnSecondary">#000000</item>
++        <item name="colorSecondaryContainer">#1a1a1a</item>
++        <item name="colorOnSecondaryContainer">#ffffff</item>
++        <item name="colorTertiary">#ffff00</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#404000</item>
++        <item name="colorOnTertiaryContainer">#ffffff</item>
++        <item name="android:colorBackground">#000000</item>
++        <item name="colorOnBackground">#ffffff</item>
++        <item name="android:windowBackground">#000000</item>
++        <item name="colorSurface">#000000</item>
++        <item name="colorOnSurface">#ffffff</item>
++        <item name="colorSurfaceVariant">#1a1a1a</item>
++        <item name="colorOnSurfaceVariant">#e0e0e0</item>
++        <item name="colorOutline">#ffffff</item>
++        <item name="colorOutlineVariant">#ffffff</item>
++        <item name="colorSurfaceBright">#1a1a1a</item>
++        <item name="colorSurfaceDim">#000000</item>
++        <item name="colorSurfaceContainerLowest">#000000</item>
++        <item name="colorSurfaceContainerLow">#000000</item>
++        <item name="colorSurfaceContainer">#000000</item>
++        <item name="colorSurfaceContainerHigh">#1a1a1a</item>
++        <item name="colorSurfaceContainerHighest">#1a1a1a</item>
++        <item name="android:textColorPrimary">#ffffff</item>
++        <item name="android:textColorSecondary">#e0e0e0</item>
++        <item name="android:colorAccent">#ffff00</item>
++        <item name="android:textColorLink">#ffff00</item>
++    </style>
++    <style name="ObscurantOverlay35" parent="">
++        <item name="colorPrimary">#0000ee</item>
++        <item name="colorOnPrimary">#ffffff</item>
++        <item name="colorPrimaryContainer">#bfbffb</item>
++        <item name="colorOnPrimaryContainer">#000000</item>
++        <item name="colorSecondary">#202020</item>
++        <item name="colorOnSecondary">#ffffff</item>
++        <item name="colorSecondaryContainer">#f0f0f0</item>
++        <item name="colorOnSecondaryContainer">#000000</item>
++        <item name="colorTertiary">#0000ee</item>
++        <item name="colorOnTertiary">#ffffff</item>
++        <item name="colorTertiaryContainer">#bfbffb</item>
++        <item name="colorOnTertiaryContainer">#000000</item>
++        <item name="android:colorBackground">#ffffff</item>
++        <item name="colorOnBackground">#000000</item>
++        <item name="android:windowBackground">#ffffff</item>
++        <item name="colorSurface">#ffffff</item>
++        <item name="colorOnSurface">#000000</item>
++        <item name="colorSurfaceVariant">#f0f0f0</item>
++        <item name="colorOnSurfaceVariant">#202020</item>
++        <item name="colorOutline">#000000</item>
++        <item name="colorOutlineVariant">#000000</item>
++        <item name="colorSurfaceBright">#f0f0f0</item>
++        <item name="colorSurfaceDim">#ffffff</item>
++        <item name="colorSurfaceContainerLowest">#ffffff</item>
++        <item name="colorSurfaceContainerLow">#ffffff</item>
++        <item name="colorSurfaceContainer">#ffffff</item>
++        <item name="colorSurfaceContainerHigh">#f0f0f0</item>
++        <item name="colorSurfaceContainerHighest">#f0f0f0</item>
++        <item name="android:textColorPrimary">#000000</item>
++        <item name="android:textColorSecondary">#202020</item>
++        <item name="android:colorAccent">#0000ee</item>
++        <item name="android:textColorLink">#0000ee</item>
++    </style>
++    <style name="ObscurantOverlay36" parent="">
++        <item name="colorPrimary">#b5543a</item>
++        <item name="colorOnPrimary">#ffffff</item>
++        <item name="colorPrimaryContainer">#e6ccc1</item>
++        <item name="colorOnPrimaryContainer">#2b2b2b</item>
++        <item name="colorSecondary">#5c5c5c</item>
++        <item name="colorOnSecondary">#e9e6df</item>
++        <item name="colorSecondaryContainer">#ffffff</item>
++        <item name="colorOnSecondaryContainer">#2b2b2b</item>
++        <item name="colorTertiary">#b5543a</item>
++        <item name="colorOnTertiary">#ffffff</item>
++        <item name="colorTertiaryContainer">#e6ccc1</item>
++        <item name="colorOnTertiaryContainer">#2b2b2b</item>
++        <item name="android:colorBackground">#e9e6df</item>
++        <item name="colorOnBackground">#2b2b2b</item>
++        <item name="android:windowBackground">#e9e6df</item>
++        <item name="colorSurface">#f6f4ee</item>
++        <item name="colorOnSurface">#2b2b2b</item>
++        <item name="colorSurfaceVariant">#ffffff</item>
++        <item name="colorOnSurfaceVariant">#5c5c5c</item>
++        <item name="colorOutline">#d6d2c8</item>
++        <item name="colorOutlineVariant">#d6d2c8</item>
++        <item name="colorSurfaceBright">#ffffff</item>
++        <item name="colorSurfaceDim">#e9e6df</item>
++        <item name="colorSurfaceContainerLowest">#f6f4ee</item>
++        <item name="colorSurfaceContainerLow">#f6f4ee</item>
++        <item name="colorSurfaceContainer">#f6f4ee</item>
++        <item name="colorSurfaceContainerHigh">#ffffff</item>
++        <item name="colorSurfaceContainerHighest">#ffffff</item>
++        <item name="android:textColorPrimary">#2b2b2b</item>
++        <item name="android:textColorSecondary">#5c5c5c</item>
++        <item name="android:colorAccent">#b5543a</item>
++        <item name="android:textColorLink">#b5543a</item>
++    </style>
++    <style name="ObscurantOverlay37" parent="">
++        <item name="colorPrimary">#a0522d</item>
++        <item name="colorOnPrimary">#ffffff</item>
++        <item name="colorPrimaryContainer">#dfc6ad</item>
++        <item name="colorOnPrimaryContainer">#5b4636</item>
++        <item name="colorSecondary">#7d6551</item>
++        <item name="colorOnSecondary">#e6d9bd</item>
++        <item name="colorSecondaryContainer">#fbf5e6</item>
++        <item name="colorOnSecondaryContainer">#5b4636</item>
++        <item name="colorTertiary">#a0522d</item>
++        <item name="colorOnTertiary">#ffffff</item>
++        <item name="colorTertiaryContainer">#dfc6ad</item>
++        <item name="colorOnTertiaryContainer">#5b4636</item>
++        <item name="android:colorBackground">#e6d9bd</item>
++        <item name="colorOnBackground">#5b4636</item>
++        <item name="android:windowBackground">#e6d9bd</item>
++        <item name="colorSurface">#f4ecd8</item>
++        <item name="colorOnSurface">#5b4636</item>
++        <item name="colorSurfaceVariant">#fbf5e6</item>
++        <item name="colorOnSurfaceVariant">#7d6551</item>
++        <item name="colorOutline">#d3c4a2</item>
++        <item name="colorOutlineVariant">#d3c4a2</item>
++        <item name="colorSurfaceBright">#fbf5e6</item>
++        <item name="colorSurfaceDim">#e6d9bd</item>
++        <item name="colorSurfaceContainerLowest">#f4ecd8</item>
++        <item name="colorSurfaceContainerLow">#f4ecd8</item>
++        <item name="colorSurfaceContainer">#f4ecd8</item>
++        <item name="colorSurfaceContainerHigh">#fbf5e6</item>
++        <item name="colorSurfaceContainerHighest">#fbf5e6</item>
++        <item name="android:textColorPrimary">#5b4636</item>
++        <item name="android:textColorSecondary">#7d6551</item>
++        <item name="android:colorAccent">#a0522d</item>
++        <item name="android:textColorLink">#a0522d</item>
++    </style>
++    <style name="ObscurantOverlay38" parent="">
++        <item name="colorPrimary">#2e9e6f</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#bbe2d0</item>
++        <item name="colorOnPrimaryContainer">#1d3b2f</item>
++        <item name="colorSecondary">#46695a</item>
++        <item name="colorOnSecondary">#d8efe3</item>
++        <item name="colorSecondaryContainer">#ffffff</item>
++        <item name="colorOnSecondaryContainer">#1d3b2f</item>
++        <item name="colorTertiary">#2e9e6f</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#bbe2d0</item>
++        <item name="colorOnTertiaryContainer">#1d3b2f</item>
++        <item name="android:colorBackground">#d8efe3</item>
++        <item name="colorOnBackground">#1d3b2f</item>
++        <item name="android:windowBackground">#d8efe3</item>
++        <item name="colorSurface">#eaf8f1</item>
++        <item name="colorOnSurface">#1d3b2f</item>
++        <item name="colorSurfaceVariant">#ffffff</item>
++        <item name="colorOnSurfaceVariant">#46695a</item>
++        <item name="colorOutline">#bfe0d0</item>
++        <item name="colorOutlineVariant">#bfe0d0</item>
++        <item name="colorSurfaceBright">#ffffff</item>
++        <item name="colorSurfaceDim">#d8efe3</item>
++        <item name="colorSurfaceContainerLowest">#eaf8f1</item>
++        <item name="colorSurfaceContainerLow">#eaf8f1</item>
++        <item name="colorSurfaceContainer">#eaf8f1</item>
++        <item name="colorSurfaceContainerHigh">#ffffff</item>
++        <item name="colorSurfaceContainerHighest">#ffffff</item>
++        <item name="android:textColorPrimary">#1d3b2f</item>
++        <item name="android:textColorSecondary">#46695a</item>
++        <item name="android:colorAccent">#2e9e6f</item>
++        <item name="android:textColorLink">#2e9e6f</item>
++    </style>
++    <style name="ObscurantOverlay39" parent="">
++        <item name="colorPrimary">#d6527a</item>
++        <item name="colorOnPrimary">#ffffff</item>
++        <item name="colorPrimaryContainer">#f2c4d1</item>
++        <item name="colorOnPrimaryContainer">#4a2631</item>
++        <item name="colorSecondary">#774f5b</item>
++        <item name="colorOnSecondary">#f2d9df</item>
++        <item name="colorSecondaryContainer">#ffffff</item>
++        <item name="colorOnSecondaryContainer">#4a2631</item>
++        <item name="colorTertiary">#d6527a</item>
++        <item name="colorOnTertiary">#ffffff</item>
++        <item name="colorTertiaryContainer">#f2c4d1</item>
++        <item name="colorOnTertiaryContainer">#4a2631</item>
++        <item name="android:colorBackground">#f2d9df</item>
++        <item name="colorOnBackground">#4a2631</item>
++        <item name="android:windowBackground">#f2d9df</item>
++        <item name="colorSurface">#fbeaee</item>
++        <item name="colorOnSurface">#4a2631</item>
++        <item name="colorSurfaceVariant">#ffffff</item>
++        <item name="colorOnSurfaceVariant">#774f5b</item>
++        <item name="colorOutline">#e6c4cc</item>
++        <item name="colorOutlineVariant">#e6c4cc</item>
++        <item name="colorSurfaceBright">#ffffff</item>
++        <item name="colorSurfaceDim">#f2d9df</item>
++        <item name="colorSurfaceContainerLowest">#fbeaee</item>
++        <item name="colorSurfaceContainerLow">#fbeaee</item>
++        <item name="colorSurfaceContainer">#fbeaee</item>
++        <item name="colorSurfaceContainerHigh">#ffffff</item>
++        <item name="colorSurfaceContainerHighest">#ffffff</item>
++        <item name="android:textColorPrimary">#4a2631</item>
++        <item name="android:textColorSecondary">#774f5b</item>
++        <item name="android:colorAccent">#d6527a</item>
++        <item name="android:textColorLink">#d6527a</item>
++    </style>
++    <style name="ObscurantOverlay40" parent="">
++        <item name="colorPrimary">#2f80ed</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#bad6f9</item>
++        <item name="colorOnPrimaryContainer">#14304d</item>
++        <item name="colorSecondary">#48688a</item>
++        <item name="colorOnSecondary">#d6e8fa</item>
++        <item name="colorSecondaryContainer">#ffffff</item>
++        <item name="colorOnSecondaryContainer">#14304d</item>
++        <item name="colorTertiary">#2f80ed</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#bad6f9</item>
++        <item name="colorOnTertiaryContainer">#14304d</item>
++        <item name="android:colorBackground">#d6e8fa</item>
++        <item name="colorOnBackground">#14304d</item>
++        <item name="android:windowBackground">#d6e8fa</item>
++        <item name="colorSurface">#e9f3fd</item>
++        <item name="colorOnSurface">#14304d</item>
++        <item name="colorSurfaceVariant">#ffffff</item>
++        <item name="colorOnSurfaceVariant">#48688a</item>
++        <item name="colorOutline">#bcd3ea</item>
++        <item name="colorOutlineVariant">#bcd3ea</item>
++        <item name="colorSurfaceBright">#ffffff</item>
++        <item name="colorSurfaceDim">#d6e8fa</item>
++        <item name="colorSurfaceContainerLowest">#e9f3fd</item>
++        <item name="colorSurfaceContainerLow">#e9f3fd</item>
++        <item name="colorSurfaceContainer">#e9f3fd</item>
++        <item name="colorSurfaceContainerHigh">#ffffff</item>
++        <item name="colorSurfaceContainerHighest">#ffffff</item>
++        <item name="android:textColorPrimary">#14304d</item>
++        <item name="android:textColorSecondary">#48688a</item>
++        <item name="android:colorAccent">#2f80ed</item>
++        <item name="android:textColorLink">#2f80ed</item>
++    </style>
++    <style name="ObscurantOverlay41" parent="">
++        <item name="colorPrimary">#c9a800</item>
++        <item name="colorOnPrimary">#000000</item>
++        <item name="colorPrimaryContainer">#efe4a5</item>
++        <item name="colorOnPrimaryContainer">#3d3a1b</item>
++        <item name="colorSecondary">#66622f</item>
++        <item name="colorOnSecondary">#f6efc2</item>
++        <item name="colorSecondaryContainer">#ffffff</item>
++        <item name="colorOnSecondaryContainer">#3d3a1b</item>
++        <item name="colorTertiary">#c9a800</item>
++        <item name="colorOnTertiary">#000000</item>
++        <item name="colorTertiaryContainer">#efe4a5</item>
++        <item name="colorOnTertiaryContainer">#3d3a1b</item>
++        <item name="android:colorBackground">#f6efc2</item>
++        <item name="colorOnBackground">#3d3a1b</item>
++        <item name="android:windowBackground">#f6efc2</item>
++        <item name="colorSurface">#fcf8dc</item>
++        <item name="colorOnSurface">#3d3a1b</item>
++        <item name="colorSurfaceVariant">#ffffff</item>
++        <item name="colorOnSurfaceVariant">#66622f</item>
++        <item name="colorOutline">#e5dc9c</item>
++        <item name="colorOutlineVariant">#e5dc9c</item>
++        <item name="colorSurfaceBright">#ffffff</item>
++        <item name="colorSurfaceDim">#f6efc2</item>
++        <item name="colorSurfaceContainerLowest">#fcf8dc</item>
++        <item name="colorSurfaceContainerLow">#fcf8dc</item>
++        <item name="colorSurfaceContainer">#fcf8dc</item>
++        <item name="colorSurfaceContainerHigh">#ffffff</item>
++        <item name="colorSurfaceContainerHighest">#ffffff</item>
++        <item name="android:textColorPrimary">#3d3a1b</item>
++        <item name="android:textColorSecondary">#66622f</item>
++        <item name="android:colorAccent">#c9a800</item>
++        <item name="android:textColorLink">#c9a800</item>
++    </style>
++</resources>
 --- a/mobile/android/fenix/app/src/main/res/values/strings.xml
 +++ b/mobile/android/fenix/app/src/main/res/values/strings.xml
 @@ -2,9 +2,9 @@
@@ -4658,6 +7213,15 @@
      <string name="protection_panel_banner_protected_title">%s is on guard</string>
      <!-- Description text for the protection panel banner when privacy dashboard is enabled.
          %1$d is the number of trackers blocked. -->
+@@ -3520,7 +3520,7 @@
+           and there are no trackers blocked.-->
+     <string name="protection_panel_banner_protected_no_blocked_trackers_description">You’re protected.</string>
+     <!-- Label text for the Enhanced Tracking Protection toggle. -->
+-    <string name="protection_panel_etp_toggle_label">Enhanced Tracking Protection</string>
++    <string name="protection_panel_etp_toggle_label">Shields for this site</string>
+     <!-- Toggle if Enhanced Tracking Protection is turned on -->
+     <string name="protection_panel_etp_toggle_on">On</string>
+     <!-- Toggle if Enhanced Tracking Protection is turned off -->
 @@ -3649,8 +3649,8 @@
          Note: Some strings are marked as unused as they are referenced via the Nimbus experimentation
          platform and have no persistent reference in code -->
@@ -4997,10 +7561,23 @@
      </androidx.preference.PreferenceCategory>
  
      <androidx.preference.Preference
-@@ -274,4 +277,32 @@
+@@ -274,4 +277,45 @@
              android:title="@string/preferences_start_profiler"
              app:isPreferenceVisible="false" />
      </androidx.preference.PreferenceCategory>
++
++    <androidx.preference.Preference
++        android:key="pref_key_obscurant_themes"
++        android:title="Obscurant themes"
++        android:summary="42 color themes from the desktop browser"
++        app:iconSpaceReserved="false" />
++
++    <androidx.preference.SwitchPreferenceCompat
++        android:key="pref_key_obscurant_google_container"
++        android:title="Keep Google in its own container"
++        android:summary="Google and YouTube get a separate cookie jar, away from your other browsing. Not used in private tabs."
++        android:defaultValue="true"
++        app:iconSpaceReserved="false" />
 +
 +    <androidx.preference.EditTextPreference
 +        android:key="pref_key_virustotal_api_key"

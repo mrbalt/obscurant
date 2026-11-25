@@ -21,12 +21,12 @@ What each build has today (yes / no, and "untested" where I have not seen it wor
 | Feature | Linux (Arch) | Linux (portable) | Windows | Android |
 | --- | --- | --- | --- | --- |
 | Built-in ad, tracker and phishing blocker (adblock-rust with EasyList, EasyPrivacy, uBlock, Brave and phishing lists) | yes | yes | yes, untested | lists bundled, untested |
-| Shield panel with per-site switches | yes | yes | yes, untested | no |
-| Google container (sign-in isolated from the rest of your browsing) | yes | yes | yes, untested | no |
+| Shield panel with per-site switches | yes | yes | yes, untested | yes, untested |
+| Google container (sign-in isolated from the rest of your browsing) | yes | yes | yes, untested | yes, untested |
 | VirusTotal download check with your own key (only the hash is sent) | yes | yes | yes, untested | yes, untested |
 | "Obscurity" voice assistant that runs only on your computer | yes | needs extra packages | yes, microphone untested | no |
 | SponsorBlock and YouTube ad removal | yes | yes | yes, untested | SponsorBlock add-on shortcut only |
-| Themes, new tab page, its own password page | yes | yes | yes, untested | no |
+| Themes, new tab page, its own password page | yes | yes | yes, untested | themes and new tab page, untested; no password page |
 | Hide my IP with Tor (one click) | needs `tor` installed | needs `tor` installed | yes, Tor included | no |
 | Update notice (about once a day, tells you only) | yes | yes | not aware of Windows releases yet | yes, untested |
 | Profile-guided and link-time optimized build | yes | no | no | link-time only |
@@ -128,30 +128,35 @@ Note: this package is built for very new systems (it needs glibc 2.44), so it on
 
 ## Obscurant for Android (early test build)
 
-An Android version built from Firefox for Android (Fenix) and its engine, with the same privacy goals. **This is an early test build (build 4) for 64-bit ARM phones, Android 8.0 or newer, which covers practically every Samsung phone in use.** It has been tested only in Waydroid so far, not yet on a real phone, so expect rough edges and please report problems: https://github.com/mrbalt/obscurant/issues
+An Android version built from Firefox for Android (Fenix) and its engine, with the same privacy goals. **This is an early test build (build 5) for 64-bit ARM phones, Android 8.0 or newer, which covers practically every Samsung phone in use.** Earlier builds were tried in Waydroid. **Build 5 compiles and passes package checks, but it has not been run on any device before release**, so expect rough edges and please report problems: https://github.com/mrbalt/obscurant/issues
 
 **Install (Samsung and other phones):**
 
-1. On your phone, download `Obscurant-153.7.0-arm64-v8a.apk` from the [Android release](https://github.com/mrbalt/obscurant/releases/tag/android-153.7.0-4). If you installed an older build, this one installs over it.
+1. On your phone, download `Obscurant-153.7.0-arm64-v8a.apk` from the [Android release](https://github.com/mrbalt/obscurant/releases/tag/android-153.7.0-5). If you installed an older build, this one installs over it.
 2. Samsung blocks installs from outside the Play Store by default. In *Settings, Security and privacy, Auto Blocker*, turn Auto Blocker off while you install. Then allow *Install unknown apps* for the browser or Files app you downloaded it with.
 3. Tap the downloaded file and install. If Google Play Protect offers to send the app to Google for scanning, you can choose *Don't send*.
 4. Check the file before you install (recommended): its SHA-256 is in `SHA256SUMS-android`, and the signing certificate fingerprint should be `8585a142582dfadb1b6177d90f461de8672598b5296bcd7d51b6598fa7cf28d4`.
 
-How to tell it is Obscurant and not Firefox: a gray hexagon icon, the name "Obscurant", a dark navy look with blue accents, no welcome tour, no sign-in button.
+How to tell it is Obscurant and not Firefox: on first start from the app icon you see the Obscurant intro and setup screen (theme, memory mode, default browser), then a new tab page with a clock and the Obscurant logo.
 
-What it does today:
+What it does today (items marked *new* are in build 5 and not yet tried on a device):
 
+- *New:* **setup screen** on first start: intro, 42 themes plus the default, Lean or Balanced memory, default browser.
+- *New:* its own **new tab page** and **42 color themes** from the desktop browser (Settings, "Obscurant themes").
+- *New:* **shields** in the shield icon panel: ads and trackers, phishing, fingerprinting and "do not sell my data" (all sites), plus "Shields for this site".
+- *New:* **Google container**: Google and YouTube pages opened from a normal tab get a separate cookie jar (switch in Settings; not used in private tabs). "Sign in with Google" on another website may fail with it on.
+- *New:* Mozilla's terms and privacy popups are off.
 - Its own name, icon, colors and dark theme, and its own app id (`org.obscurant.browser`), so it installs next to Firefox without touching it.
 - **No telemetry:** the part of the app that uploads usage data is switched off in the code, not just by a setting. Mozilla's settings server, experiments, sponsored tiles, Pocket, Firefox Suggest and the Mozilla VPN are off. No sign-in, account or sync screens, and no AI features.
 - DuckDuckGo is the default search engine, with Brave Search added.
 - The built-in ad, tracker and phishing blocker lists are bundled in the app (not yet verified on a real page).
 - **Speed-optimized engine** (link-time optimization), an **update notice** that only tells you when a newer build exists (switch off in Settings), and a **SponsorBlock** shortcut in Settings.
 - **VirusTotal download check:** at the bottom of Settings, add your free key (the steps are shown there; also see [docs/VIRUSTOTAL.md](docs/VIRUSTOTAL.md)). Only a download's hash is sent.
-- In a clean first-launch test (a fresh install left alone for 150 seconds in Waydroid), the app contacted no Mozilla server.
+- In a clean first-launch test of build 2 (a fresh install left alone for 150 seconds in Waydroid), the app contacted no Mozilla server.
 
 What it does **not** do yet (honest list):
 
-- None of the other desktop extras: shields panel, themes chooser, new tab page, passwords page, voice assistant, Tor button, Google container.
+- No passwords page of its own, voice assistant or Tor button.
 - Profile-guided optimization (only the desktop Arch build has it).
 - No automatic updates: you install new versions by hand.
 
@@ -169,7 +174,7 @@ This downloads the Firefox ESR source from Mozilla, applies `obscurant-full.patc
 
 **Windows:** a cross-build from Linux; see [`windows/README.md`](windows/README.md) and `windows/mozconfig`. The Windows source changes are in `patches/obscurant-full-with-windows.patch`.
 
-**Android:** a build of Firefox for Android with `android/mozconfig.template`; the source changes are in `patches/obscurant-android.patch` and the images come from `tools/make_android_assets.py`. You sign the APK with your own key.
+**Android:** a build of Firefox for Android with `android/mozconfig.template`; the source changes are in `patches/obscurant-android.patch` the images come from `tools/make_android_assets.py` and the themes from `tools/make_android_themes.py`. `tools/make_android_apk.py` removes your build folder paths, aligns and signs the APK with your own key.
 
 ## Security updates
 
