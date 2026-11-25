@@ -6570,7 +6570,7 @@
 +</html>
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -57,6 +57,54 @@
+@@ -57,6 +57,52 @@
          content/browser/browser-siteIdentity.js             (content/browser-siteIdentity.js)
          content/browser/browser-sitePermissionPanel.js      (content/browser-sitePermissionPanel.js)
          content/browser/browser-siteProtections.js          (content/browser-siteProtections.js)
@@ -6582,14 +6582,12 @@
 +        content/browser/obscurant-voice.xhtml               (content/obscurant-voice.xhtml)
 +        content/browser/obscurant-voice.css                 (content/obscurant-voice.css)
 +        content/browser/obscurant-voice.js                  (content/obscurant-voice.js)
-+#ifdef XP_WIN
 +        content/browser/lists/easylist.txt                  (content/lists/easylist.txt)
 +        content/browser/lists/easyprivacy.txt               (content/lists/easyprivacy.txt)
 +        content/browser/lists/ublock.txt                    (content/lists/ublock.txt)
 +        content/browser/lists/brave.txt                     (content/lists/brave.txt)
 +        content/browser/lists/phishing-abp.txt              (content/lists/phishing-abp.txt)
 +        content/browser/lists/ai-sites.txt                  (content/lists/ai-sites.txt)
-+#endif
 +        content/browser/fonts/Rubik80sFade-subset.woff2     (content/fonts/Rubik80sFade-subset.woff2)
 +        content/browser/fonts/Rubik80sFade-OFL.txt          (content/fonts/OFL.txt)
 +        content/browser/fonts/alumnisanscollegiateone.woff2           (content/fonts/alumnisanscollegiateone.woff2)
@@ -13263,7 +13261,7 @@
 +};
 --- /dev/null
 +++ b/browser/modules/ObscurantVoice.sys.mjs
-@@ -0,0 +1,1522 @@
+@@ -0,0 +1,1529 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13739,16 +13737,22 @@
 +    this._once = !!options.once;
 +    this._setState("starting");
 +    const home = Services.dirsvc.get("Home", Ci.nsIFile).path;
-+    const appDir = win ? PathUtils.join(Services.dirsvc.get("GreBinD", Ci.nsIFile).path, "voice") : "";
++    const appDir = PathUtils.join(Services.dirsvc.get("GreBinD", Ci.nsIFile).path, "voice");
 +    const helper = this._path(
 +      "obscurant.voice.helper",
 +      win
 +        ? [PathUtils.join(appDir, "obscurant-voice.py")]
-+        : ["/usr/lib/obscurant/voice/obscurant-voice.py", `${home}/Projects/browser/tools/voice/obscurant-voice.py`]
++        : [
++            PathUtils.join(appDir, "obscurant-voice.py"),
++            "/usr/lib/obscurant/voice/obscurant-voice.py",
++            `${home}/Projects/browser/tools/voice/obscurant-voice.py`,
++          ]
 +    );
 +    const model = this._path(
 +      "obscurant.voice.model",
-+      win ? [PathUtils.join(appDir, "ggml-base.en.bin")] : [`${home}/.local/share/obscurant/voice/ggml-base.en.bin`]
++      win
++        ? [PathUtils.join(appDir, "ggml-base.en.bin")]
++        : [PathUtils.join(appDir, "ggml-base.en.bin"), `${home}/.local/share/obscurant/voice/ggml-base.en.bin`]
 +    );
 +    if (!helper || !model) {
 +      this._setState("error", !helper ? "voice helper not found" : "speech model not found");
@@ -13756,8 +13760,9 @@
 +      return;
 +    }
 +    const args = [helper, "--model", model, "--wake", Services.prefs.getStringPref(WAKE, "hey obscurity")];
-+    if (win) {
-+      args.push("--whisper", PathUtils.join(appDir, "whisper-cli.exe"));
++    const bundledWhisper = PathUtils.join(appDir, win ? "whisper-cli.exe" : "whisper-cli");
++    if (win || (await IOUtils.exists(bundledWhisper))) {
++      args.push("--whisper", bundledWhisper);
 +    }
 +    const vocab = await this._vocab();
 +    if (vocab) {

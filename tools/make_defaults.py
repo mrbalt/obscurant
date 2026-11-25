@@ -30,6 +30,7 @@ def build(lists_dir):
 
 
 (ROOT / "pkg" / "obscurant.js").write_text(build(PKG_LISTS))
+(ROOT / "pkg" / "obscurant-portable.js").write_text(build(WIN_LISTS))
 WIN_EXTRA = """
 // --- Windows
 pref("general.useragent.override", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:153.0) Gecko/20100101 Firefox/153.0");

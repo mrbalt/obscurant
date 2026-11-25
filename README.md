@@ -3,7 +3,7 @@
 A private, low-memory, fast web browser built on Firefox ESR. Everything is built in: no extensions needed, no accounts, no sync,
 no AI features, nothing sent to Mozilla. Not made, endorsed or supported by Mozilla.
 
-Status: **Linux** (x86_64, packaged for Arch-based systems) and **Windows** (64-bit, first build, still being tested). Details for Windows are in [`windows/README.md`](windows/README.md).
+Status: **Linux** (x86_64: `.deb`, `.rpm`, AppImage, tarball and an optimized Arch package) and **Windows** (64-bit, first build, still being tested). Details for Windows are in [`windows/README.md`](windows/README.md).
 
 ## What is different from Firefox
 
@@ -76,7 +76,28 @@ What to expect on Windows:
 - Not available on Windows yet: screen-reader support. The voice assistant is included but its microphone path is untested on real hardware.
 - This is a first build tested mostly under Wine. Please report what breaks: https://github.com/mrbalt/obscurant/issues
 
-## Install on Linux (Arch, CachyOS, Manjaro and other Arch-based)
+## Install on Linux
+
+Pick the one for your distro. All files are on the [latest release](https://github.com/mrbalt/obscurant/releases/latest), and `SHA256SUMS-linux` lists their checksums (`sha256sum -c SHA256SUMS-linux`).
+
+| Your distro | What to do |
+| --- | --- |
+| **Ubuntu, Debian, Linux Mint, Pop!_OS** | Download `obscurant_153.7.0-1_amd64.deb`, then `sudo apt install ./obscurant_153.7.0-1_amd64.deb` |
+| **Fedora** | Download `obscurant-153.7.0-1.x86_64.rpm`, then `sudo dnf install ./obscurant-153.7.0-1.x86_64.rpm` (the package is unsigned) |
+| **Any distro (one file)** | Download `Obscurant-153.7.0-x86_64.AppImage`, then `chmod +x Obscurant-153.7.0-x86_64.AppImage` and run it |
+| **Any distro (unpack and run)** | Download `Obscurant-153.7.0-linux-x86_64.tar.xz`, `tar xf` it, run `Obscurant/start-obscurant`. Run `Obscurant/install.sh` once to add it to your applications menu |
+| **Arch, CachyOS, Manjaro** | The optimized package below (faster start), or any of the above |
+
+What to know about the portable builds (`.deb`, `.rpm`, AppImage, tarball):
+
+- They are built with Mozilla's own toolchain and need only **glibc 2.18 or newer** (2014), so they run on practically every current distro.
+- Tested by installing and starting in containers: Debian 12, Ubuntu 22.04 and Ubuntu 24.04 (`.deb`), plus the AppImage and tarball on Ubuntu 24.04. **The `.rpm` was checked but not install-tested on Fedora.** Real-desktop testing is limited, so please report problems: https://github.com/mrbalt/obscurant/issues
+- They are **not profile-optimized yet**, so they start somewhat slower than the Arch package.
+- The blocker lists, search engine policy (DuckDuckGo, Brave Search) and AI switches are built in, same as everywhere else.
+- **Voice assistant (optional):** the speech engine is included, but you also need `python3` with `numpy`, `bubblewrap` and PulseAudio/PipeWire's `parecord`, plus the speech model (see `voice/README.txt` in the install folder).
+- Not code-signed.
+
+### Arch, CachyOS, Manjaro and other Arch-based (optimized package)
 
 Download `obscurant-*.pkg.tar.zst` from the latest release, then:
 
@@ -88,7 +109,7 @@ Optional, for the voice assistant:
     mkdir -p ~/.local/share/obscurant/voice
     curl -L -o ~/.local/share/obscurant/voice/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
 
-Turn it on from the shield panel (Voice group).
+Note: this package is built for very new systems (it needs glibc 2.44), so it only runs on Arch-like distros that are fully up to date. Everyone else should use one of the portable builds above.
 
 ## Build from source
 
