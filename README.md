@@ -17,6 +17,26 @@ Status: **Linux** (x86_64, packaged for Arch-based systems) and **Windows** (64-
 - Faster startup and page loads: profile-guided and link-time optimized build.
 - **Update notices**, not auto-update: about once a day it fetches one signed file from this repo's latest release and tells you if a new version is out. It downloads and installs nothing.
 
+## How much memory does it use?
+
+Measured on one Linux laptop (12 cores, 14 GB RAM), same eight pages in every browser, a fresh profile each time, real memory use (PSS, summed over every process the browser started), run in a hidden display so nothing else competed for the screen.
+
+| Browser | Memory at 45 s | at 90 s | at 150 s | Processes at 150 s |
+| --- | --- | --- | --- | --- |
+| **Obscurant** (153 ESR base, optimized build) | 911 MB | 1,076 MB | 698 MB* | 8 |
+| Brave 158 | 1,065 MB | 1,023 MB | 986 MB | 21 |
+| Firefox 160 (stock, default settings) | 2,538 MB | 2,529 MB | 2,433 MB | 54 |
+
+\* Obscurant frees background tabs after 2 minutes (click one to reload it), so the 150 s figure is not the same state as the other two. With every tab still loaded (45 s and 90 s), Obscurant is about the same as Brave and well under half of stock Firefox.
+
+How to read this, honestly:
+
+- **One run per browser on one machine.** Treat differences under about 15% as noise. Results will differ on your computer and with other pages.
+- Pages: Wikipedia, GitHub, Hacker News, BBC, The Guardian, Stack Overflow, Arch Linux, YouTube.
+- Obscurant and Brave block ads and trackers out of the box, which saves memory on ad-heavy pages. Stock Firefox does not block ads by default, so part of its gap comes from loading them.
+- Other browsers (Chrome, Edge and so on) were not installed on the test machine, so they are not listed. No Windows numbers yet.
+- Repeat it yourself: `tools/ram_compare.py` (Linux, edit the browser list at the top).
+
 ## Install on Windows (64-bit)
 
 Pick one. None of them needs administrator rights, and all of them install for your user only.
