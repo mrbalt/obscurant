@@ -54,3 +54,13 @@ for d, sz in {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192
     for n in ("ic_launcher", "ic_launcher_round"):
         bg.save(os.path.join(SRC, "release", "res", f"mipmap-{d}", f"{n}.webp"))
 print("assets written")
+mark = fg.crop(fg.getbbox())
+for p in (os.path.join(res, "drawable-hdpi", "fenix_search_widget.webp"),
+          os.path.join(SRC, "release", "res", "drawable-hdpi", "fenix_search_widget.webp")):
+    size = Image.open(p).size
+    card = Image.new("RGBA", size, (13, 16, 23, 255))
+    small = mark.copy()
+    small.thumbnail((int(min(size) * 0.7),) * 2)
+    card.paste(small, ((size[0] - small.width) // 2, (size[1] - small.height) // 2), small)
+    card.save(p)
+print("widget preview written")

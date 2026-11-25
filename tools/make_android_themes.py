@@ -51,8 +51,15 @@ for i, (name, frame, toolbar, field, text, sub, accent, border) in enumerate(PAL
         "android:textColorPrimary": text, "android:textColorSecondary": sub, "android:colorAccent": accent,
         "android:textColorLink": accent,
     }
+    # Every item must point at a named color: the app reads theme colors back as resource ids and
+    # crashes on a literal value.
+    names = {}
+    for value in items.values():
+        if value not in names:
+            names[value] = "obscurant_%d_%d" % (i, len(names))
+            xml.append('    <color name="%s">%s</color>' % (names[value], value))
     xml.append('    <style name="%s" parent="">' % style_name(i))
-    xml += ['        <item name="%s">%s</item>' % kv for kv in items.items()]
+    xml += ['        <item name="%s">@color/%s</item>' % (k, names[v]) for k, v in items.items()]
     xml.append("    </style>")
 xml.append("</resources>")
 open(os.path.join(APP, "res", "values", "obscurant_themes.xml"), "w").write("\n".join(xml) + "\n")
