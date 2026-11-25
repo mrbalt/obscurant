@@ -41,6 +41,10 @@ def keygen():
 
 
 def sign(a):
+    if a.package and a.package.endswith(".pkg.tar.zst"):
+        scrub = Path(__file__).with_name("scrub_arch_pkg.py")
+        if subprocess.run([sys.executable, str(scrub), "--check", a.package]).returncode:
+            sys.exit("personal strings in the package: clean it with tools/scrub_arch_pkg.py first")
     manifest = {
         "version": a.version,
         "build": a.build,
