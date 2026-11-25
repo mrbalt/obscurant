@@ -1,16 +1,12 @@
-# Windows (x86_64) cross-build from Linux. No PGO or LTO yet.
 ac_add_options --enable-application=browser
 ac_add_options --with-branding=browser/branding/obscurant
-mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/../obj-win64
-
+mk_add_options MOZ_OBJDIR=@OBJDIR@
 ac_add_options --target=x86_64-pc-windows-msvc
-ac_add_options --with-windows-sysroot=@WINSYSROOT@
-
+export WINSYSROOT=@WINSYSROOT@
 ac_add_options --enable-optimize
 ac_add_options --disable-debug
 ac_add_options --disable-debug-symbols
 ac_add_options --disable-tests
-
 ac_add_options --disable-crashreporter
 ac_add_options --disable-updater
 ac_add_options --disable-webspeech
@@ -19,8 +15,12 @@ ac_add_options --disable-negotiateauth
 ac_add_options --disable-jxl
 ac_add_options --disable-backgroundtasks
 ac_add_options --disable-webdriver
-
-mk_add_options MOZ_PARALLEL_BUILD=10
 ac_add_options --with-app-basename=Obscurant
-mk_add_options MOZ_REQUIRE_SIGNING=1
-export MOZ_REQUIRE_SIGNING=1
+mk_add_options MOZ_PARALLEL_BUILD=10
+ac_add_options --disable-accessibility
+export MOZ_WINDOWS_APP_SDK_DIR=@APPSDK_PLACEHOLDER@
+ac_add_options --with-wasi-sysroot=/usr/share/wasi-sysroot
+export MOZ_WINDOWS_RS_DIR=@WINDOWS_RS_DIR@
+export CFLAGS="/clang:-ffile-prefix-map=@HOME@=/build /clang:-fdebug-prefix-map=@HOME@=/build -Wno-error=incompatible-pointer-types -Wno-error=int-conversion -Wno-error=implicit-function-declaration"
+export CXXFLAGS="/clang:-ffile-prefix-map=@HOME@=/build /clang:-fdebug-prefix-map=@HOME@=/build -Wno-error=incompatible-pointer-types -Wno-error=int-conversion -Wno-error=implicit-function-declaration"
+export RUSTFLAGS="--remap-path-prefix=@HOME@=/build"

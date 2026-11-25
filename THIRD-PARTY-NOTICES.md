@@ -49,3 +49,11 @@ Ayu and others) reproduce the published color palettes of those projects. Names 
 ## Warranty
 
 No warranty. There is no automatic update service. Security fixes arrive only when a new package is installed.
+
+## Windows voice assistant pack
+- **Python embeddable distribution** (Python Software Foundation License): runs the voice helper on Windows.
+- **NumPy** (BSD-3-Clause): audio maths in the voice helper.
+- **python-sounddevice** (MIT) and **PortAudio** (MIT): microphone access on Windows.
+- **CFFI** (MIT) and **pycparser** (BSD-3-Clause): needed by python-sounddevice.
+- **whisper.cpp** (MIT) and OpenAI Whisper `base.en` weights (MIT): speech recognition, built from the same release as the Linux package.
+- **Microsoft Visual C++ runtime** (vcruntime140, msvcp140): redistributed under Microsoft's redistribution terms for Visual Studio.

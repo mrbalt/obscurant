@@ -6,6 +6,7 @@ CFG = ROOT / "config"
 SOURCES = ["user.js", "diet-safe.js", "blocker.js", "no-phone-home.js"]
 DEV_LISTS = "/home/USER/Projects/browser/config/lists/"
 PKG_LISTS = "/usr/share/obscurant/lists/"
+WIN_LISTS = "chrome://browser/content/lists/"
 SKIP = ("browser.aboutwelcome.enabled",)
 
 
@@ -29,6 +30,12 @@ def build(lists_dir):
 
 
 (ROOT / "pkg" / "obscurant.js").write_text(build(PKG_LISTS))
+WIN_EXTRA = """
+// --- Windows
+pref("general.useragent.override", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:153.0) Gecko/20100101 Firefox/153.0");
+pref("browser.tabs.unloadOnLowMemory", true);
+"""
+(ROOT / "pkg" / "obscurant-win.js").write_text(build(WIN_LISTS) + WIN_EXTRA)
 dev = ROOT / "src" / "obj-v1" / "dist" / "bin" / "browser" / "defaults" / "preferences"
 dev.mkdir(parents=True, exist_ok=True)
 (dev / "obscurant.js").write_text(build(DEV_LISTS))

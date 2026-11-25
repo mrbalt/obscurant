@@ -13,8 +13,10 @@ wake phrase (used for yes/no answers).
   obscurant-voice.py --check-wake "hey browser open youtube" --wake "hey browser"
 """
 import argparse, difflib, hashlib, json, os, re, shutil, signal, subprocess, sys, threading, time, wave
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 
+IS_WIN = os.name == "nt"
 RATE = 16000
 FAST = ["-bs", "1", "-bo", "1", "-nf", "-ac", "768", "-t", "8"]
 # Whisper decodes short, noisy clips far better when it is told what kind of words to expect.
@@ -81,6 +83,9 @@ def split_wake(text, wake):
 def sandbox_cmd(whisper, model, prompt):
     """(is_sandboxed, argv). The argv contains FD, replaced by a pipe carrying the audio, which
     bwrap turns into a file that exists only inside the sandbox's memory-backed /tmp."""
+    if IS_WIN:
+        exe = whisper if os.path.isabs(whisper) else (shutil.which(whisper) or whisper)
+        return True, [exe, "-m", model, "-nt", "-np", "-ng", "-l", "en", "--prompt", prompt, *FAST]
     bwrap = shutil.which("bwrap")
     flags = ["-m", "/model.bin", "-f", "/tmp/in.wav", "-nt", "-np", "-ng", "-l", "en", "--prompt", prompt, *FAST]
     if not bwrap:
@@ -120,6 +125,21 @@ def wav_bytes(samples):
 def transcribe(cmd, samples):
     data = wav_bytes(samples)
     try:
+        if IS_WIN:
+            import winrestrict
+            tmp = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Obscurant", "voice-tmp")
+            os.makedirs(tmp, exist_ok=True)
+            path = os.path.join(tmp, f"u{os.getpid()}.wav")
+            with open(path, "wb") as f:
+                f.write(data)
+            try:
+                code, stdout = winrestrict.run(cmd + ["-f", path], b"")
+            finally:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            return stdout.decode("utf-8", "replace").strip()
         if "FD" in cmd:                                   # sandboxed: audio goes through a pipe
             r_fd, w_fd = os.pipe()
             argv = [str(r_fd) if x == "FD" else x for x in cmd]
@@ -147,7 +167,30 @@ def transcribe(cmd, samples):
         return ""
 
 
+def frames_from_mic_win():
+    import queue
+    import sounddevice as sd
+    q = queue.Queue()
+    def callback(indata, frames, t, status):
+        q.put(bytes(indata))
+    try:
+        stream = sd.RawInputStream(samplerate=RATE, channels=1, dtype="int16", blocksize=FRAME, callback=callback)
+        stream.start()
+    except Exception as ex:
+        out({"type": "error", "message": f"cannot open the microphone: {ex}. Check Windows Settings > Privacy > Microphone."})
+        return
+    try:
+        while True:
+            yield np.frombuffer(q.get(), dtype=np.int16)
+    finally:
+        stream.stop()
+        stream.close()
+
+
 def frames_from_mic():
+    if IS_WIN:
+        yield from frames_from_mic_win()
+        return
     p = subprocess.Popen(["parecord", "--raw", f"--rate={RATE}", "--channels=1", "--format=s16le", "--latency-msec=60"],
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
@@ -180,10 +223,11 @@ def main():
         print(json.dumps({"wake": ok, "rest": rest})); return
 
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    try:   # die with the browser
-        import ctypes; ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)
-    except Exception:
-        pass
+    if not IS_WIN:
+        try:   # die with the browser
+            import ctypes; ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)
+        except Exception:
+            pass
     if not a.model or not os.path.isfile(a.model):
         out({"type": "error", "message": "model file missing"}); return 2
     want = PINNED.get(os.path.basename(a.model))
@@ -213,6 +257,12 @@ def main():
     if not a.no_sandbox:
         prompt = (PROMPT + " " + a.vocab.strip())[:900]
         sandboxed, cmd = sandbox_cmd(a.whisper, a.model, prompt)
+    if IS_WIN and cmd is not None and not a.no_sandbox:
+        try:
+            import winrestrict
+            code, _ = winrestrict.run([cmd[0], "--help"], b"", timeout=15)
+        except Exception as ex:
+            out({"type": "error", "message": f"cannot start the speech engine with reduced rights: {ex}"}); return 4
     if cmd is None or sandboxed is None:
         cmd = [a.whisper, "-m", a.model, "-nt", "-np", "-ng", "-l", "en", "--prompt", (PROMPT + " " + a.vocab.strip())[:900], *FAST]
         out({"type": "warning", "message": "running without a sandbox (bwrap not found)"})
