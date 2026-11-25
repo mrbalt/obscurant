@@ -35,7 +35,7 @@ How to read this, honestly:
 - Pages: Wikipedia, GitHub, Hacker News, BBC, The Guardian, Stack Overflow, Arch Linux, YouTube.
 - Obscurant and Brave block ads and trackers out of the box, which saves memory on ad-heavy pages. Stock Firefox does not block ads by default, so part of its gap comes from loading them.
 - Other browsers (Chrome, Edge and so on) were not installed on the test machine, so they are not listed. No Windows numbers yet.
-- Repeat it yourself: `tools/ram_compare.py` (Linux, edit the browser list at the top).
+- Repeat it yourself: `tools/ram_compare.py` (Linux; edit the binary paths at the top and the browser list in `main()`).
 
 ## Install on Windows (64-bit)
 
