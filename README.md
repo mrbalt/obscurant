@@ -48,3 +48,8 @@ tells you if you are behind. If you rely on this browser, check it regularly and
 
 MPL 2.0 (see `LICENSE`). Third-party data and fonts: see `THIRD-PARTY-NOTICES.md`. The SponsorBlock feature uses data under
 CC BY-NC-SA 4.0 (non-commercial).
+
+
+## Download checks (VirusTotal)
+
+See [docs/VIRUSTOTAL.md](docs/VIRUSTOTAL.md) for how to get a free key and where to put it on Linux and Windows.

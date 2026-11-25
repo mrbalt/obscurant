@@ -57,3 +57,6 @@ No warranty. There is no automatic update service. Security fixes arrive only wh
 - **CFFI** (MIT) and **pycparser** (BSD-3-Clause): needed by python-sounddevice.
 - **whisper.cpp** (MIT) and OpenAI Whisper `base.en` weights (MIT): speech recognition, built from the same release as the Linux package.
 - **Microsoft Visual C++ runtime** (vcruntime140, msvcp140): redistributed under Microsoft's redistribution terms for Visual Studio.
+
+## Windows Tor pack
+- **Tor** 0.4.9.x (BSD-3-Clause), **libevent** (BSD-3-Clause), **OpenSSL** (Apache-2.0) and **zlib** (zlib license): the `tor` folder holds the `tor.exe` from the Tor Project's official Tor Expert Bundle, unmodified, with its license texts in `tor/licenses`. It is used only by the "Hide my IP with Tor" button.

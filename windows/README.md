@@ -12,6 +12,14 @@ Status: **first build, tested only under Wine and by one person on a real Window
 | `install.cmd`, `install.ps1` | Put them next to the zip for an offline install, or run alone to download the zip. |
 | `SHA256SUMS-windows` | Checksums for all of the above. Compare before you run anything. |
 
+## What is Windows-specific
+
+- Installs register Obscurant under **Settings > Apps > Default apps** (current user only).
+- The **Hide my IP with Tor** button uses the official `tor.exe` shipped in the `tor` folder (unmodified Tor Expert Bundle).
+- The **VirusTotal key** is stored in `%APPDATA%\Obscurant\vt-api-key`. How to get one: [docs/VIRUSTOTAL.md](../docs/VIRUSTOTAL.md).
+- Search engines (DuckDuckGo default, Brave Search) and the AI switches come from `distribution\policies.json`, same as on Linux.
+- `default-browser-agent.exe` (a Mozilla helper) is removed.
+
 ## Known limits
 
 - **Not signed.** Windows SmartScreen will warn. Signing needs a paid certificate.

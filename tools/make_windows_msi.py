@@ -4,7 +4,7 @@ import os, shutil, subprocess, sys, tempfile, uuid, zipfile
 from xml.sax.saxutils import quoteattr
 
 ZIP, OUT = sys.argv[1:3]
-VERSION = os.environ.get("OBSCURANT_MSI_VERSION", "153.7.0.4")
+VERSION = os.environ.get("OBSCURANT_MSI_VERSION", "153.7.0.7")
 NS = uuid.UUID("6f1c2b9e-5a41-4c8b-9a73-2e5d0c7b1a10")
 
 
@@ -54,6 +54,36 @@ def main():
         return out
 
     body = walk(root, "Obscurant")
+    exe = '"[INSTALLDIR]obscurant.exe"'
+    CL = "Software\\Clients\\StartMenuInternet\\Obscurant"
+    regs = [
+        ("Software\\Classes\\ObscurantURL", "", "Obscurant URL"),
+        ("Software\\Classes\\ObscurantURL", "URL Protocol", ""),
+        ("Software\\Classes\\ObscurantURL\\DefaultIcon", "", "[INSTALLDIR]obscurant.exe,0"),
+        ("Software\\Classes\\ObscurantURL\\shell\\open\\command", "", exe + ' -osint -url "%1"'),
+        ("Software\\Classes\\ObscurantHTML", "", "Obscurant HTML Document"),
+        ("Software\\Classes\\ObscurantHTML\\DefaultIcon", "", "[INSTALLDIR]obscurant.exe,0"),
+        ("Software\\Classes\\ObscurantHTML\\shell\\open\\command", "", exe + ' -osint -url "%1"'),
+        (CL, "", "Obscurant"),
+        (CL + "\\DefaultIcon", "", "[INSTALLDIR]obscurant.exe,0"),
+        (CL + "\\shell\\open\\command", "", exe),
+        (CL + "\\Capabilities", "ApplicationName", "Obscurant"),
+        (CL + "\\Capabilities", "ApplicationDescription", "Private, low-memory web browser"),
+        (CL + "\\Capabilities\\URLAssociations", "http", "ObscurantURL"),
+        (CL + "\\Capabilities\\URLAssociations", "https", "ObscurantURL"),
+        (CL + "\\Capabilities\\FileAssociations", ".htm", "ObscurantHTML"),
+        (CL + "\\Capabilities\\FileAssociations", ".html", "ObscurantHTML"),
+        (CL + "\\Capabilities\\FileAssociations", ".xhtml", "ObscurantHTML"),
+        ("Software\\RegisteredApplications", "Obscurant", "Software\\Clients\\StartMenuInternet\\Obscurant\\Capabilities"),
+    ]
+    reg_xml = [f'<Component Id="CRegistry" Guid="{guid("registry")}">']
+    for i, (k, n, v) in enumerate(regs):
+        name = f' Name={quoteattr(n)}' if n else ""
+        kp = ' KeyPath="yes"' if i == 0 else ""
+        reg_xml.append(f'<RegistryValue Root="HKCU" Key={quoteattr(k)}{name} Type="string" Value={quoteattr(v)}{kp}/>')
+    reg_xml.append("</Component>")
+    comps.append("CRegistry")
+    body += reg_xml
     refs = "".join(f'<ComponentRef Id="{c}"/>' for c in comps)
     lic = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "LICENSE"), encoding="utf-8").read()
     rtf_path = os.path.join(work, "License.rtf")

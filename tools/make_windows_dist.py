@@ -2,11 +2,12 @@
 # Turns the cross-built Windows package zip into the distributable portable zip.
 # Adds the Microsoft C++ runtime DLLs, scrubs build paths out of omni.ja, and refuses to finish if
 # the local username or any personal string is still present anywhere in the output.
-import io, os, re, shutil, sys, zipfile
+import io, json, os, re, shutil, sys, zipfile
 
 BUILD_ZIP, CRT_DIR, OUT_ZIP = sys.argv[1:4]
 VOICE_DIR = sys.argv[4] if len(sys.argv) > 4 else None
 DEFAULTS_JS = sys.argv[5] if len(sys.argv) > 5 else None
+TOR_DIR = sys.argv[6] if len(sys.argv) > 6 else None
 ROOT = "Obscurant"
 RUNTIME = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_atomic_wait.dll"]
 HOME = os.path.expanduser("~")
@@ -46,10 +47,32 @@ def main():
         if not found:
             sys.exit("missing runtime dll " + name)
         shutil.copy(found, os.path.join(top, name))
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pol = os.path.join(repo, "config", "policies.json")
+    if not os.path.isfile(pol):
+        sys.exit("config/policies.json not found: the search engines and AI switches would be missing")
+    json.load(open(pol))
+    os.makedirs(os.path.join(top, "distribution"), exist_ok=True)
+    shutil.copy(pol, os.path.join(top, "distribution", "policies.json"))
+    lic = os.path.join(top, "licenses")
+    os.makedirs(os.path.join(lic, "fonts"), exist_ok=True)
+    for name in ("LICENSE", "THIRD-PARTY-NOTICES.md"):
+        shutil.copy(os.path.join(repo, name), lic)
+    for d in (os.path.join(repo, "pkg", "src", "obscurant-assets", "fonts"), os.path.join(repo, "assets", "fonts")):
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                if f.startswith("OFL") and f.endswith(".txt"):
+                    shutil.copy(os.path.join(d, f), os.path.join(lic, "fonts", f))
+    for name in ("default-browser-agent.exe",):
+        path = os.path.join(top, name)
+        if os.path.exists(path):
+            os.remove(path)
     if DEFAULTS_JS:
         d = os.path.join(top, "browser", "defaults", "preferences")
         os.makedirs(d, exist_ok=True)
         shutil.copy(DEFAULTS_JS, os.path.join(d, "obscurant.js"))
+    if TOR_DIR:
+        shutil.copytree(TOR_DIR, os.path.join(top, "tor"))
     if VOICE_DIR:
         shutil.copytree(VOICE_DIR, os.path.join(top, "voice"), ignore=shutil.ignore_patterns("__pycache__", "*.verified", "*.pyc"))
     for root, _, files in os.walk(top):

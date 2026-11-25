@@ -53,6 +53,24 @@ Section "Install"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Obscurant" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Obscurant" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Obscurant" "NoRepair" 1
+  WriteRegStr HKCU "Software\Classes\ObscurantURL" "" "Obscurant URL"
+  WriteRegStr HKCU "Software\Classes\ObscurantURL" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\ObscurantURL\DefaultIcon" "" "$INSTDIR\obscurant.exe,0"
+  WriteRegStr HKCU "Software\Classes\ObscurantURL\shell\open\command" "" '"$INSTDIR\obscurant.exe" -osint -url "%1"'
+  WriteRegStr HKCU "Software\Classes\ObscurantHTML" "" "Obscurant HTML Document"
+  WriteRegStr HKCU "Software\Classes\ObscurantHTML\DefaultIcon" "" "$INSTDIR\obscurant.exe,0"
+  WriteRegStr HKCU "Software\Classes\ObscurantHTML\shell\open\command" "" '"$INSTDIR\obscurant.exe" -osint -url "%1"'
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\Obscurant" "" "Obscurant"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\Obscurant\DefaultIcon" "" "$INSTDIR\obscurant.exe,0"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\Obscurant\shell\open\command" "" '"$INSTDIR\obscurant.exe"'
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\Obscurant\Capabilities" "ApplicationName" "Obscurant"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\Obscurant\Capabilities" "ApplicationDescription" "Private, low-memory web browser"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\Obscurant\Capabilities\URLAssociations" "http" "ObscurantURL"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\Obscurant\Capabilities\URLAssociations" "https" "ObscurantURL"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\Obscurant\Capabilities\FileAssociations" ".htm" "ObscurantHTML"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\Obscurant\Capabilities\FileAssociations" ".html" "ObscurantHTML"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\Obscurant\Capabilities\FileAssociations" ".xhtml" "ObscurantHTML"
+  WriteRegStr HKCU "Software\RegisteredApplications" "Obscurant" "Software\Clients\StartMenuInternet\Obscurant\Capabilities"
 SectionEnd
 
 Section "Uninstall"
@@ -61,6 +79,10 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Obscurant.lnk"
   Delete "$DESKTOP\Obscurant.lnk"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Obscurant"
+  DeleteRegKey HKCU "Software\Classes\ObscurantURL"
+  DeleteRegKey HKCU "Software\Classes\ObscurantHTML"
+  DeleteRegKey HKCU "Software\Clients\StartMenuInternet\Obscurant"
+  DeleteRegValue HKCU "Software\RegisteredApplications" "Obscurant"
 SectionEnd
 '''
 
