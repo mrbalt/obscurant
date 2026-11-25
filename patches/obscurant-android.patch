@@ -3225,6 +3225,16 @@
  
      /**
       * Enables Firefox Labs.
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/HomeActivity.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/HomeActivity.kt
+@@ -731,6 +731,7 @@
+     @CallSuper
+     override fun onResume() {
+         super.onResume()
++        org.mozilla.fenix.utils.ObscurantUpdate.maybeCheck(this)
+ 
+         // Diagnostic breadcrumb for "Display already aquired" crash:
+         // https://github.com/mozilla-mobile/android-components/issues/7960
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/Components.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/components/Components.kt
 @@ -246,15 +246,8 @@
@@ -3429,6 +3439,98 @@
      }
  
      override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+@@ -552,6 +563,16 @@
+                 null
+             }
+ 
++            "pref_key_obscurant_sponsorblock" -> {
++                openInNewTab("https://addons.mozilla.org/firefox/addon/sponsorblock/")
++                null
++            }
++
++            "pref_key_obscurant_updates" -> {
++                openInNewTab("https://github.com/mrbalt/obscurant/releases")
++                null
++            }
++
+             resources.getString(R.string.pref_key_about) -> {
+                 SettingsFragmentDirections.actionSettingsFragmentToAboutFragment()
+             }
+--- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/ObscurantUpdate.kt
++++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/ObscurantUpdate.kt
+@@ -0,0 +1,72 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++package org.mozilla.fenix.utils
++
++import android.content.Context
++import android.os.Handler
++import android.os.Looper
++import android.widget.Toast
++import androidx.preference.PreferenceManager
++import org.json.JSONArray
++import java.net.HttpURLConnection
++import java.net.URL
++
++/**
++ * Tells the user when a newer Obscurant for Android exists. It only reads the public release list on GitHub
++ * (about once a day) and shows a notice. It never downloads or installs anything. Can be switched off in Settings.
++ */
++object ObscurantUpdate {
++    const val ENABLED_PREF = "pref_key_obscurant_update_check"
++    private const val LAST_PREF = "obscurant_update_last_check"
++    private const val BUILD = 4
++    private const val DAY_MS = 24L * 60 * 60 * 1000
++    private const val TIMEOUT_MS = 12000
++    private const val HTTP_OK = 200
++    private val tagPattern = Regex("^android-[0-9.]+-([0-9]+)$")
++
++    @Suppress("TooGenericExceptionCaught")
++    fun maybeCheck(context: Context) {
++        val app = context.applicationContext
++        val prefs = PreferenceManager.getDefaultSharedPreferences(app)
++        val now = System.currentTimeMillis()
++        if (!prefs.getBoolean(ENABLED_PREF, true) || now - prefs.getLong(LAST_PREF, 0L) < DAY_MS) {
++            return
++        }
++        prefs.edit().putLong(LAST_PREF, now).apply()
++        Thread {
++            try {
++                val connection = URL("https://api.github.com/repos/mrbalt/obscurant/releases?per_page=10")
++                    .openConnection() as HttpURLConnection
++                connection.connectTimeout = TIMEOUT_MS
++                connection.readTimeout = TIMEOUT_MS
++                try {
++                    if (connection.responseCode == HTTP_OK) {
++                        val releases = JSONArray(connection.inputStream.bufferedReader().readText())
++                        var newest = 0
++                        for (i in 0 until releases.length()) {
++                            val tag = releases.getJSONObject(i).optString("tag_name")
++                            tagPattern.matchEntire(tag)?.groupValues?.get(1)?.toIntOrNull()?.let {
++                                if (it > newest) newest = it
++                            }
++                        }
++                        if (newest > BUILD) {
++                            Handler(Looper.getMainLooper()).post {
++                                Toast.makeText(
++                                    app,
++                                    "A newer Obscurant is available. Settings, Obscurant updates.",
++                                    Toast.LENGTH_LONG,
++                                ).show()
++                            }
++                        }
++                    }
++                } finally {
++                    connection.disconnect()
++                }
++            } catch (e: Exception) {
++                // No notice if the check fails.
++            }
++        }.start()
++    }
++}
 --- a/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/Settings.kt
 +++ b/mobile/android/fenix/app/src/main/java/org/mozilla/fenix/utils/Settings.kt
 @@ -615,15 +615,13 @@
@@ -4805,7 +4907,7 @@
      <!-- The first active link used in privacy_notice_updated_homepage_message -->
      <string name="privacy_notice_updated_homepage_message_privacy_notice" tools:ignore="UnusedResources">Privacy Notice</string>
      <!-- The second active link used in privacy_notice_updated_homepage_message -->
-@@ -4234,37 +4234,39 @@
+@@ -4234,37 +4234,45 @@
      <!-- Toast shown when the user picks an image from the gallery in QR mode but no QR code is found in it -->
      <string name="lens_camera_qr_no_code_found">No QR code found in image</string>
  
@@ -4862,6 +4964,12 @@
      <string name="firefox_labs_no_labs_available_description">No experimental features to try right now</string>
 +    <string name="obscurant_vt_title" translatable="false">VirusTotal key</string>
 +    <string name="obscurant_vt_steps" translatable="false">Checks every download against VirusTotal. Only the file\'s fingerprint is sent, never the file. To get a free key: 1) go to virustotal.com and sign up, 2) confirm your email, 3) sign in, open your profile picture, then API key, 4) copy the 64-character key and paste it below.</string>
++    <string name="obscurant_sponsorblock_title" translatable="false">SponsorBlock for YouTube</string>
++    <string name="obscurant_sponsorblock_summary" translatable="false">Skip sponsor segments in videos. Opens the add-on page; tap to add it.</string>
++    <string name="obscurant_update_check_title" translatable="false">Tell me about new versions</string>
++    <string name="obscurant_update_check_summary" translatable="false">About once a day, checks GitHub for a newer Obscurant and shows a notice. It never installs anything.</string>
++    <string name="obscurant_updates_title" translatable="false">Obscurant updates</string>
++    <string name="obscurant_updates_summary" translatable="false">Open the releases page to download a newer version by hand.</string>
  </resources>
 --- a/mobile/android/fenix/app/src/main/res/xml/preferences.xml
 +++ b/mobile/android/fenix/app/src/main/res/xml/preferences.xml
@@ -4889,7 +4997,7 @@
      </androidx.preference.PreferenceCategory>
  
      <androidx.preference.Preference
-@@ -274,4 +277,13 @@
+@@ -274,4 +277,32 @@
              android:title="@string/preferences_start_profiler"
              app:isPreferenceVisible="false" />
      </androidx.preference.PreferenceCategory>
@@ -4902,6 +5010,25 @@
 +        android:persistent="true"
 +        app:iconSpaceReserved="false"
 +        app:useSimpleSummaryProvider="false" />
++
++    <androidx.preference.Preference
++        android:key="pref_key_obscurant_sponsorblock"
++        android:title="@string/obscurant_sponsorblock_title"
++        android:summary="@string/obscurant_sponsorblock_summary"
++        app:iconSpaceReserved="false" />
++
++    <androidx.preference.SwitchPreferenceCompat
++        android:key="pref_key_obscurant_update_check"
++        android:title="@string/obscurant_update_check_title"
++        android:summary="@string/obscurant_update_check_summary"
++        android:defaultValue="true"
++        app:iconSpaceReserved="false" />
++
++    <androidx.preference.Preference
++        android:key="pref_key_obscurant_updates"
++        android:title="@string/obscurant_updates_title"
++        android:summary="@string/obscurant_updates_summary"
++        app:iconSpaceReserved="false" />
  </androidx.preference.PreferenceScreen>
 --- a/mobile/android/fenix/app/src/release/res/values/static_strings.xml
 +++ b/mobile/android/fenix/app/src/release/res/values/static_strings.xml

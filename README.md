@@ -25,11 +25,11 @@ What each build has today (yes / no, and "untested" where I have not seen it wor
 | Google container (sign-in isolated from the rest of your browsing) | yes | yes | yes, untested | no |
 | VirusTotal download check with your own key (only the hash is sent) | yes | yes | yes, untested | yes, untested |
 | "Obscurity" voice assistant that runs only on your computer | yes | needs extra packages | yes, microphone untested | no |
-| SponsorBlock and YouTube ad removal | yes | yes | yes, untested | no |
+| SponsorBlock and YouTube ad removal | yes | yes | yes, untested | SponsorBlock add-on shortcut only |
 | Themes, new tab page, its own password page | yes | yes | yes, untested | no |
 | Hide my IP with Tor (one click) | needs `tor` installed | needs `tor` installed | yes, Tor included | no |
-| Update notice (about once a day, signed file from this repo) | yes | yes | not aware of Windows releases yet | no |
-| Profile-guided and link-time optimized build | yes | no | no | no |
+| Update notice (about once a day, tells you only) | yes | yes | not aware of Windows releases yet | yes, untested |
+| Profile-guided and link-time optimized build | yes | no | no | link-time only |
 | Memory-saving settings (idle tab unloading, small caches) | yes | yes | partly | partly |
 
 ## How much memory does it use?
@@ -128,11 +128,11 @@ Note: this package is built for very new systems (it needs glibc 2.44), so it on
 
 ## Obscurant for Android (early test build)
 
-An Android version built from Firefox for Android (Fenix) and its engine, with the same privacy goals. **This is an early test build (build 3) for 64-bit ARM phones, Android 8.0 or newer, which covers practically every Samsung phone in use.** It has been tested only in Waydroid so far, not yet on a real phone, so expect rough edges and please report problems: https://github.com/mrbalt/obscurant/issues
+An Android version built from Firefox for Android (Fenix) and its engine, with the same privacy goals. **This is an early test build (build 4) for 64-bit ARM phones, Android 8.0 or newer, which covers practically every Samsung phone in use.** It has been tested only in Waydroid so far, not yet on a real phone, so expect rough edges and please report problems: https://github.com/mrbalt/obscurant/issues
 
 **Install (Samsung and other phones):**
 
-1. On your phone, download `Obscurant-153.7.0-arm64-v8a.apk` from the [Android release](https://github.com/mrbalt/obscurant/releases/tag/android-153.7.0-1). If you installed an older build, this one installs over it.
+1. On your phone, download `Obscurant-153.7.0-arm64-v8a.apk` from the [Android release](https://github.com/mrbalt/obscurant/releases/tag/android-153.7.0-4). If you installed an older build, this one installs over it.
 2. Samsung blocks installs from outside the Play Store by default. In *Settings, Security and privacy, Auto Blocker*, turn Auto Blocker off while you install. Then allow *Install unknown apps* for the browser or Files app you downloaded it with.
 3. Tap the downloaded file and install. If Google Play Protect offers to send the app to Google for scanning, you can choose *Don't send*.
 4. Check the file before you install (recommended): its SHA-256 is in `SHA256SUMS-android`, and the signing certificate fingerprint should be `8585a142582dfadb1b6177d90f461de8672598b5296bcd7d51b6598fa7cf28d4`.
@@ -145,13 +145,14 @@ What it does today:
 - **No telemetry:** the part of the app that uploads usage data is switched off in the code, not just by a setting. Mozilla's settings server, experiments, sponsored tiles, Pocket, Firefox Suggest and the Mozilla VPN are off. No sign-in, account or sync screens, and no AI features.
 - DuckDuckGo is the default search engine, with Brave Search added.
 - The built-in ad, tracker and phishing blocker lists are bundled in the app (not yet verified on a real page).
+- **Speed-optimized engine** (link-time optimization), an **update notice** that only tells you when a newer build exists (switch off in Settings), and a **SponsorBlock** shortcut in Settings.
 - **VirusTotal download check:** at the bottom of Settings, add your free key (the steps are shown there; also see [docs/VIRUSTOTAL.md](docs/VIRUSTOTAL.md)). Only a download's hash is sent.
 - In a clean first-launch test (a fresh install left alone for 150 seconds in Waydroid), the app contacted no Mozilla server.
 
 What it does **not** do yet (honest list):
 
-- None of the other desktop extras: shields panel, themes chooser, new tab page, passwords page, voice assistant, Tor button, update notice, SponsorBlock, Google container.
-- The speed-optimized build (this one is a plain build).
+- None of the other desktop extras: shields panel, themes chooser, new tab page, passwords page, voice assistant, Tor button, Google container.
+- Profile-guided optimization (only the desktop Arch build has it).
 - No automatic updates: you install new versions by hand.
 
 ## Build from source

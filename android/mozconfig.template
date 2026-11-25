@@ -8,7 +8,8 @@ ac_add_options --disable-debug-symbols
 ac_add_options --disable-tests
 ac_add_options --disable-crashreporter
 ac_add_options --disable-updater
-mk_add_options MOZ_PARALLEL_BUILD=10
+mk_add_options MOZ_PARALLEL_BUILD=8
 export CFLAGS="-ffile-prefix-map=@HOME@=/build -fdebug-prefix-map=@HOME@=/build"
 export CXXFLAGS="-ffile-prefix-map=@HOME@=/build -fdebug-prefix-map=@HOME@=/build"
 export RUSTFLAGS="--remap-path-prefix=@HOME@=/build"
+ac_add_options --enable-lto=thin
