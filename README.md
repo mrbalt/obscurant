@@ -3,6 +3,8 @@
 A private, low-memory, fast web browser built on Firefox ESR. Everything is built in: no extensions needed, no accounts, no sync,
 no AI features, nothing sent to Mozilla. Not made, endorsed or supported by Mozilla.
 
+**Note:** Claude, an AI assistant made by Anthropic, was involved with some of this project.
+
 Status: **Linux**, **Windows** and **Android** (early test builds on Windows and Android). Pick your platform:
 
 | Platform | Get it | State |
