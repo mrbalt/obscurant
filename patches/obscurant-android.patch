@@ -3275,6 +3275,17 @@
      implementation project('longfox')
      implementation project(':components:browser-engine-gecko')
      implementation project(':components:compose-awesomebar')
+--- a/mobile/android/fenix/app/proguard-rules.pro
++++ b/mobile/android/fenix/app/proguard-rules.pro
+@@ -28,3 +28,8 @@
+ 
+ # Keep code generated from Glean Metrics
+ -keep class org.mozilla.fenix.GleanMetrics.** {  *; }
++
++# Obscurant: native code looks these classes up by name.
++-keep class org.mozilla.fenix.voice.WhisperEngine { *; }
++-keep class org.torproject.jni.** { *; }
++-keep class net.freehaven.tor.control.** { *; }
 --- a/mobile/android/fenix/app/src/main/AndroidManifest.xml
 +++ b/mobile/android/fenix/app/src/main/AndroidManifest.xml
 @@ -503,6 +503,12 @@
@@ -6943,7 +6954,7 @@
 +object ObscurantUpdate {
 +    const val ENABLED_PREF = "pref_key_obscurant_update_check"
 +    private const val LAST_PREF = "obscurant_update_last_check"
-+    private const val BUILD = 7
++    private const val BUILD = 8
 +    private const val DAY_MS = 24L * 60 * 60 * 1000
 +    private const val TIMEOUT_MS = 12000
 +    private const val HTTP_OK = 200

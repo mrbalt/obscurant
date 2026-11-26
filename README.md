@@ -128,14 +128,16 @@ Note: this package is built for very new systems (it needs glibc 2.44), so it on
 
 ## Obscurant for Android (early test build)
 
-The desktop browser, rebuilt for a phone on the Firefox for Android engine. **This is an early test build (build 7) for 64-bit ARM phones, Android 8.0 or newer.** It was tested in the Waydroid emulator, not yet on a real phone by me. Please report problems: https://github.com/mrbalt/obscurant/issues
+The desktop browser, rebuilt for a phone on the Firefox for Android engine. **This is an early test build (build 8) for 64-bit ARM phones, Android 8.0 or newer.** It was tested in the Waydroid emulator, not yet on a real phone by me. Please report problems: https://github.com/mrbalt/obscurant/issues
 
 **Install (Samsung and other phones):**
 
-1. On your phone, download `Obscurant-153.7.0-arm64-v8a.apk` from the [Android release](https://github.com/mrbalt/obscurant/releases/tag/android-153.7.0-7). If you installed an older build, this one installs over it.
+1. On your phone, download `Obscurant-153.7.0-arm64-v8a.apk` from the [Android release](https://github.com/mrbalt/obscurant/releases/tag/android-153.7.0-8). If you installed an older build, this one installs over it.
 2. Samsung blocks installs from outside the Play Store by default. In *Settings, Security and privacy, Auto Blocker*, turn Auto Blocker off while you install. Then allow *Install unknown apps* for the browser or Files app you downloaded it with.
 3. Tap the downloaded file and install. If Google Play Protect offers to send the app to Google for scanning, you can choose *Don't send*.
 4. Check the file before you install (recommended): its SHA-256 is in `SHA256SUMS-android`, and the signing certificate fingerprint should be `8585a142582dfadb1b6177d90f461de8672598b5296bcd7d51b6598fa7cf28d4`.
+
+**Build 8 is faster:** builds 1 to 7 were published with Android's app optimizer (R8) switched off. It is on now. In the emulator the app opens about 13% faster and the download is 19 MB smaller; the difference on a real phone has not been measured.
 
 What is in it:
 
